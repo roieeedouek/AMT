@@ -1,0 +1,15 @@
+#!/bin/bash
+uv sync
+source .venv/bin/activate
+
+export CLAUDE_FILESYSTEM_PATH="$HOME/dev/claude-dr"
+
+# installable js/ts servers
+claude mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem $CLAUDE_FILESYSTEM_PATH
+claude mcp add brave-search -e BRAVE_API_KEY=BSAXmn_biqiVZ6lN1OqJuohjZauF9TN -- npx -y @modelcontextprotocol/server-brave-search
+claude mcp add e2b -e E2B_API_KEY=sk_e2b_12a6390093dc286906cdcbfccc07bf65d95f9260 -- npx -y @e2b/mcp-server 
+
+# installable python servers
+claude mcp add fetch uvx mcp-server-fetch
+
+claude --dangerously-skip-permissions
