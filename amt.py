@@ -21,7 +21,7 @@ class AcousticTracker:
         """
         self.room_dim = room_dim
         self.c = speed_of_sound
-        self.fs = 96000  # Increased sampling rate for better resolution
+        self.fs = 48000  # Increased sampling rate for better resolution
         
         # Set up the room simulation
         self.setup_room()
@@ -68,6 +68,7 @@ class AcousticTracker:
         self.mics = [
             np.array([width/2 - 0.4, 0.3, 1.0]),  # Left Mic
             np.array([width/2 + 0.4, 0.3, 1.0]),  # Right Mic
+            np.array([width/2      , 0.3, 1.3]),  # Center Mic
         ]
         
         # Create microphone array
