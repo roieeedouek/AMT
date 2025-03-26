@@ -156,12 +156,19 @@ class AcousticTracker:
         # Covariance matrices - tuned for better precision
         # Lower process noise for more stable tracking
         q = 0.001  # Reduced for smoother tracking
-        q_dim = block_diag(q, q, q, q*10, q*10, q*10)  # More noise for velocity
+        
+        # Use less process noise for z-axis to make it more stable
+        q_pos = np.array([q, q, q*0.5])  # Reduce z process noise for stability
+        q_vel = np.array([q*10, q*10, q*5])  # Reduce z velocity noise too
+        q_dim = block_diag(q_pos[0], q_pos[1], q_pos[2], q_vel[0], q_vel[1], q_vel[2])
         kf.Q = q_dim
         
-        # Reduced measurement noise for higher weight on measurements
-        r = 0.05  # Reduced for more precision when measurements are good
-        kf.R = np.eye(dim_z) * r
+        # Adjust measurement noise for better z-axis stability
+        # More weight on x and y measurements compared to z
+        r_x = 0.05  # Reduced for more precision when measurements are good
+        r_y = 0.05
+        r_z = 0.1   # Higher noise for z-measurements as they are less reliable
+        kf.R = np.diag([r_x, r_y, r_z])
         
         # Initial state
         kf.x = np.zeros(dim_x)
@@ -171,6 +178,8 @@ class AcousticTracker:
         
         # Initial covariance
         kf.P = np.eye(dim_x) * 0.1
+        # Higher initial uncertainty for z-axis
+        kf.P[2, 2] = 0.2  # More uncertainty in z position initially
         
         return kf
     
@@ -553,16 +562,18 @@ class AcousticTracker:
         
         return target_ellipses
     
-    def _compute_error(self, point, ellipses):
+    def _compute_error(self, point, ellipses, prev_point=None):
         """Helper function to compute error for a point
         
         Args:
             point (np.array): Position to evaluate
             ellipses (list): List of ellipses
+            prev_point (np.array, optional): Previous position estimate for continuity
             
         Returns:
             float: Total error
         """
+        # Basic error from ellipses
         total_error = 0
         for ellipse in ellipses:
             speaker_to_point = np.linalg.norm(point - ellipse['speaker_pos'])
@@ -570,6 +581,16 @@ class AcousticTracker:
             computed_path = speaker_to_point + point_to_mic
             error = (computed_path - ellipse['path_length'])**2
             total_error += error
+        
+        # If we have a previous point, add continuity constraint
+        # especially for z-axis to avoid z-axis ambiguity/jumping
+        if prev_point is not None:
+            # Calculate distance from previous point, with higher weight on z-axis
+            z_change = (point[2] - prev_point[2])**2
+            # Penalize z-axis changes more heavily to reduce z-axis jumping
+            z_weight = 0.5  # Weight for z-continuity constraint
+            total_error += z_weight * z_change
+        
         return total_error
     
     def multilateration_twostage(self, ellipses, coarse_res=20, fine_res=50, save_error_map=False):
@@ -586,11 +607,33 @@ class AcousticTracker:
         """
         if not ellipses:
             return None
-            
+        
+        # Try to get previous position for continuity constraints
+        prev_point = None
+        try:
+            # Check if we have a target ID for these ellipses
+            for target_idx, target_ellipses in enumerate(self.match_ellipses_to_targets(ellipses)):
+                if ellipses[0] in target_ellipses:
+                    # Found the target that these ellipses belong to
+                    target_id = target_idx
+                    
+                    # Get the Kalman filter for this target
+                    kf = self.kalman_filters.get(target_id)
+                    if kf is not None:
+                        # Use the Kalman state as previous point
+                        prev_point = kf.x[:3].copy()
+                    break
+        except Exception as e:
+            print(f"Warning: Error getting previous point: {str(e)}")
+                
+        # Increase z-resolution for better precision
+        z_res_multiplier = 2
+        
         # Stage 1: Coarse search
         x = np.linspace(0, self.room_dim[0], coarse_res)
         y = np.linspace(0, self.room_dim[1], coarse_res)
-        z = np.linspace(0, self.room_dim[2], coarse_res)
+        # Keep increased search range, but add more resolution
+        z = np.linspace(0, self.room_dim[2] + 0.3, coarse_res * z_res_multiplier)
         
         best_point = None
         min_error = float('inf')
@@ -614,7 +657,7 @@ class AcousticTracker:
                         for i, yi in enumerate(y):
                             for j, xi in enumerate(x):
                                 point = np.array([xi, yi, z_actual])
-                                error_map[i, j] = self._compute_error(point, ellipses)
+                                error_map[i, j] = self._compute_error(point, ellipses, prev_point)
                         
                         error_maps[z_actual] = error_map
                     except Exception as e:
@@ -625,12 +668,12 @@ class AcousticTracker:
             except Exception as e:
                 print(f"Warning: Error creating coarse error maps: {str(e)}")
         
-        # Search on coarse grid
+        # Search on coarse grid with continuity constraints
         for xi in x:
             for yi in y:
                 for zi in z:
                     point = np.array([xi, yi, zi])
-                    total_error = self._compute_error(point, ellipses)
+                    total_error = self._compute_error(point, ellipses, prev_point)
                     
                     if total_error < min_error:
                         min_error = total_error
@@ -649,8 +692,9 @@ class AcousticTracker:
                        min(self.room_dim[0], best_point[0] + x_range/2), fine_res)
         y = np.linspace(max(0, best_point[1] - y_range/2),
                        min(self.room_dim[1], best_point[1] + y_range/2), fine_res)
+        # Use higher resolution for z-axis in fine search too
         z = np.linspace(max(0, best_point[2] - z_range/2),
-                       min(self.room_dim[2], best_point[2] + z_range/2), fine_res)
+                       min(self.room_dim[2] + 0.3, best_point[2] + z_range/2), fine_res * z_res_multiplier)
         
         # For debugging: create error maps at fine resolution
         if save_error_map:
@@ -666,19 +710,19 @@ class AcousticTracker:
                 for i, yi in enumerate(y):
                     for j, xi in enumerate(x):
                         point = np.array([xi, yi, z_actual])
-                        error_map[i, j] = self._compute_error(point, ellipses)
+                        error_map[i, j] = self._compute_error(point, ellipses, prev_point)
                 
                 # Save the fine error map
                 self._save_error_maps({z_actual: error_map}, ellipses, "fine", best_point=best_point)
             except Exception as e:
                 print(f"Warning: Error creating fine error map: {str(e)}")
         
-        # Search on fine grid
+        # Search on fine grid with continuity constraints
         for xi in x:
             for yi in y:
                 for zi in z:
                     point = np.array([xi, yi, zi])
-                    total_error = self._compute_error(point, ellipses)
+                    total_error = self._compute_error(point, ellipses, prev_point)
                     
                     if total_error < min_error:
                         min_error = total_error
@@ -2073,7 +2117,7 @@ def run_demo():
     try:
         # Run tracking simulation
         print("Running tracking simulation...")
-        tracker.run_tracking(duration=5.0, steps=40)  # More steps for smoother tracking
+        tracker.run_tracking(duration=5.0, steps=15)  # More steps for smoother tracking
     except Exception as e:
         print(f"Error during tracking simulation: {str(e)}")
         import traceback
@@ -2081,22 +2125,22 @@ def run_demo():
     
     try:
         # Visualize correlation for an early and late frame
-        print("\nVisualization of correlation and MTI for frame 5:")
-        fig = tracker.visualize_correlation(step=5)
+        print("\nVisualization of correlation and MTI for frame 4:")
+        fig = tracker.visualize_correlation(step=4)
         if fig:
-            fig.savefig(f"{output_dir}/correlation_frame5.png", dpi=300)
-            print(f"Saved to {output_dir}/correlation_frame5.png")
+            fig.savefig(f"{output_dir}/correlation_frame4.png", dpi=300)
+            print(f"Saved to {output_dir}/correlation_frame4.png")
     except Exception as e:
         print(f"Error generating correlation frame 5: {str(e)}")
     
     try:
-        print("\nVisualization of correlation and MTI for frame 30:")
-        fig = tracker.visualize_correlation(step=30)
+        print("\nVisualization of correlation and MTI for frame 8:")
+        fig = tracker.visualize_correlation(step=8)
         if fig:
-            fig.savefig(f"{output_dir}/correlation_frame30.png", dpi=300)
-            print(f"Saved to {output_dir}/correlation_frame30.png")
+            fig.savefig(f"{output_dir}/correlation_frame8.png", dpi=300)
+            print(f"Saved to {output_dir}/correlation_frame8.png")
     except Exception as e:
-        print(f"Error generating correlation frame 30: {str(e)}")
+        print(f"Error generating correlation frame 8: {str(e)}")
     
     try:
         # Create and save correlation animation
