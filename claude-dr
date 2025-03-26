@@ -12,4 +12,4 @@ claude mcp add e2b -e E2B_API_KEY=sk_e2b_12a6390093dc286906cdcbfccc07bf65d95f926
 # installable python servers
 claude mcp add fetch uvx mcp-server-fetch
 
-claude --dangerously-skip-permissions
+claude

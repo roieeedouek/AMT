@@ -892,78 +892,305 @@ class AcousticTracker:
             step (int): Current step number
             output_dir (str): Directory to save images
         """
-        # Create a figure for 2D view (top-down)
-        fig, ax = plt.subplots(figsize=(10, 8))
-        
-        # Set limits
-        ax.set_xlim(0, self.room_dim[0])
-        ax.set_ylim(0, self.room_dim[1])
-        
-        # Draw room boundaries
-        ax.plot([0, self.room_dim[0], self.room_dim[0], 0, 0], 
-               [0, 0, self.room_dim[1], self.room_dim[1], 0], 'k-', alpha=0.5)
-        
-        # Draw speakers
-        for i, pos in enumerate(self.speakers):
-            ax.plot(pos[0], pos[1], 'ro', markersize=8, label=f'Speaker {i+1}' if i == 0 else "")
-        
-        # Draw microphones
-        for i, pos in enumerate(self.mics):
-            ax.plot(pos[0], pos[1], 'bo', markersize=8, label=f'Mic {i+1}' if i == 0 else "")
-        
-        # Draw targets (ground truth)
-        for i, target in enumerate(self.targets):
-            pos = target['history'][step]
-            ax.plot(pos[0], pos[1], 'gs', markersize=10, label=f'{target["name"]} (True)' if i == 0 else "")
-        
-        # Draw ellipses
-        for i, ellipse in enumerate(ellipses):
-            speaker_pos = ellipse['speaker_pos']
-            mic_pos = ellipse['mic_pos']
-            path_length = ellipse['path_length']
+        try:
+            # Create a figure with two subplots: top-down view and front view
+            fig, (ax_top, ax_front) = plt.subplots(1, 2, figsize=(18, 8))
             
-            # Calculate ellipse properties (2D projection)
-            foci_distance = np.linalg.norm(speaker_pos[:2] - mic_pos[:2])
+            # TOP-DOWN VIEW (X-Y plane)
+            # Set limits
+            ax_top.set_xlim(0, self.room_dim[0])
+            ax_top.set_ylim(0, self.room_dim[1])
             
-            # Only draw if the ellipse is physically possible
-            if path_length > foci_distance:
-                a = path_length / 2  # Semi-major axis
-                c = foci_distance / 2  # Half distance between foci
-                b = np.sqrt(a**2 - c**2)  # Semi-minor axis
+            # Draw room boundaries
+            ax_top.plot([0, self.room_dim[0], self.room_dim[0], 0, 0], 
+                       [0, 0, self.room_dim[1], self.room_dim[1], 0], 'k-', alpha=0.5)
+            
+            # Draw speakers
+            for i, pos in enumerate(self.speakers):
+                ax_top.plot(pos[0], pos[1], 'ro', markersize=8, label=f'Speaker {i+1}' if i == 0 else "")
+            
+            # Draw microphones
+            for i, pos in enumerate(self.mics):
+                ax_top.plot(pos[0], pos[1], 'bo', markersize=8, label=f'Mic {i+1}' if i == 0 else "")
+            
+            # Draw targets (ground truth)
+            for i, target in enumerate(self.targets):
+                pos = target['history'][step]
+                ax_top.plot(pos[0], pos[1], 'gs', markersize=10, label=f'{target["name"]} (True)' if i == 0 else "")
+            
+            # Draw ellipses in top-down view
+            for i, ellipse in enumerate(ellipses):
+                speaker_pos = ellipse['speaker_pos']
+                mic_pos = ellipse['mic_pos']
+                path_length = ellipse['path_length']
                 
-                # Center of ellipse
-                center = (speaker_pos[:2] + mic_pos[:2]) / 2
+                # Calculate ellipse properties (2D projection in X-Y plane)
+                foci_distance = np.linalg.norm(speaker_pos[:2] - mic_pos[:2])
                 
-                # Angle of ellipse
-                angle = np.arctan2(mic_pos[1] - speaker_pos[1], mic_pos[0] - speaker_pos[0])
-                angle_deg = np.degrees(angle)
+                # Only draw if the ellipse is physically possible
+                if path_length > foci_distance:
+                    try:
+                        a = path_length / 2  # Semi-major axis
+                        c = foci_distance / 2  # Half distance between foci
+                        b = np.sqrt(a**2 - c**2)  # Semi-minor axis
+                        
+                        # Center of ellipse
+                        center = (speaker_pos[:2] + mic_pos[:2]) / 2
+                        
+                        # Angle of ellipse
+                        angle = np.arctan2(mic_pos[1] - speaker_pos[1], mic_pos[0] - speaker_pos[0])
+                        angle_deg = np.degrees(angle)
+                        
+                        # Create ellipse
+                        ellipse_patch = Ellipse(xy=center, width=2*a, height=2*b, angle=angle_deg, 
+                                              fill=False, edgecolor=f'C{i%10}', linestyle='-', alpha=0.7,
+                                              label=f'Ellipse S{ellipse["speaker_idx"]}→M{ellipse["mic_idx"]}' if i == 0 else "")
+                        ax_top.add_patch(ellipse_patch)
+                        
+                        # Draw a line connecting the foci
+                        ax_top.plot([speaker_pos[0], mic_pos[0]], [speaker_pos[1], mic_pos[1]], 
+                                   color=f'C{i%10}', linestyle=':', alpha=0.5)
+                    except Exception as e:
+                        print(f"Error drawing top-view ellipse: {e}")
+            
+            # Grid and labels for top-down view
+            ax_top.grid(True, alpha=0.3)
+            ax_top.set_xlabel('X (m)')
+            ax_top.set_ylabel('Y (m)')
+            ax_top.set_title(f'Step {step}: Multilateration Ellipses (Top-down view)')
+            
+            # Add legend to top-down view
+            handles, labels = ax_top.get_legend_handles_labels()
+            by_label = dict(zip(labels, handles))
+            ax_top.legend(by_label.values(), by_label.keys(), loc='upper right')
+            
+            # FRONT VIEW (X-Z plane)
+            # Set limits
+            ax_front.set_xlim(0, self.room_dim[0])
+            ax_front.set_ylim(0, self.room_dim[2])
+            
+            # Draw room boundaries
+            ax_front.plot([0, self.room_dim[0], self.room_dim[0], 0, 0], 
+                         [0, 0, self.room_dim[2], self.room_dim[2], 0], 'k-', alpha=0.5)
+            
+            # Draw speakers in front view (X-Z plane)
+            for i, pos in enumerate(self.speakers):
+                ax_front.plot(pos[0], pos[2], 'ro', markersize=8, label=f'Speaker {i+1}' if i == 0 else "")
+            
+            # Draw microphones in front view
+            for i, pos in enumerate(self.mics):
+                ax_front.plot(pos[0], pos[2], 'bo', markersize=8, label=f'Mic {i+1}' if i == 0 else "")
+            
+            # Draw targets (ground truth) in front view
+            for i, target in enumerate(self.targets):
+                pos = target['history'][step]
+                ax_front.plot(pos[0], pos[2], 'gs', markersize=10, label=f'{target["name"]} (True)' if i == 0 else "")
+            
+            # Draw ellipses in front view (X-Z plane)
+            for i, ellipse in enumerate(ellipses):
+                speaker_pos = ellipse['speaker_pos']
+                mic_pos = ellipse['mic_pos']
+                path_length = ellipse['path_length']
                 
-                # Create ellipse
-                ellipse_patch = Ellipse(xy=center, width=2*a, height=2*b, angle=angle_deg, 
-                                      fill=False, edgecolor=f'C{i%10}', linestyle='-', alpha=0.7,
-                                      label=f'Ellipse S{ellipse["speaker_idx"]}→M{ellipse["mic_idx"]}' if i == 0 else "")
-                ax.add_patch(ellipse_patch)
+                # Calculate ellipse properties (2D projection in X-Z plane)
+                # For X-Z plane projection, use first and third component (x, z)
+                foci_distance_xz = np.sqrt((speaker_pos[0] - mic_pos[0])**2 + (speaker_pos[2] - mic_pos[2])**2)
                 
-                # Draw a line connecting the foci
-                ax.plot([speaker_pos[0], mic_pos[0]], [speaker_pos[1], mic_pos[1]], 
-                       color=f'C{i%10}', linestyle=':', alpha=0.5)
-        
-        # Legend
-        handles, labels = ax.get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
-        ax.legend(by_label.values(), by_label.keys(), loc='upper right')
-        
-        # Grid and labels
-        ax.grid(True, alpha=0.3)
-        ax.set_xlabel('X (m)')
-        ax.set_ylabel('Y (m)')
-        ax.set_title(f'Step {step}: Multilateration Ellipses (Top-down view)')
-        
-        # Save figure
-        plt.tight_layout()
-        filename = f"{output_dir}/ellipses_step{step:03d}.png"
-        fig.savefig(filename, dpi=300)
-        plt.close(fig)
+                # Only draw if the ellipse is physically possible
+                if path_length > foci_distance_xz:
+                    try:
+                        a = path_length / 2  # Semi-major axis
+                        c = foci_distance_xz / 2  # Half distance between foci
+                        b = np.sqrt(a**2 - c**2)  # Semi-minor axis
+                        
+                        # Center of ellipse (X-Z plane)
+                        center_xz = ((speaker_pos[0] + mic_pos[0])/2, (speaker_pos[2] + mic_pos[2])/2)
+                        
+                        # Angle of ellipse in X-Z plane
+                        angle_xz = np.arctan2(mic_pos[2] - speaker_pos[2], mic_pos[0] - speaker_pos[0])
+                        angle_deg_xz = np.degrees(angle_xz)
+                        
+                        # Create ellipse
+                        ellipse_patch_xz = Ellipse(xy=center_xz, width=2*a, height=2*b, angle=angle_deg_xz, 
+                                                 fill=False, edgecolor=f'C{i%10}', linestyle='-', alpha=0.7)
+                        ax_front.add_patch(ellipse_patch_xz)
+                        
+                        # Draw a line connecting the foci
+                        ax_front.plot([speaker_pos[0], mic_pos[0]], [speaker_pos[2], mic_pos[2]], 
+                                      color=f'C{i%10}', linestyle=':', alpha=0.5)
+                    except Exception as e:
+                        print(f"Error drawing front-view ellipse: {e}")
+            
+            # Grid and labels for front view
+            ax_front.grid(True, alpha=0.3)
+            ax_front.set_xlabel('X (m)')
+            ax_front.set_ylabel('Z (m)')
+            ax_front.set_title(f'Step {step}: Multilateration Ellipses (Front view)')
+            
+            # Add suptitle to the figure
+            fig.suptitle(f'Step {step}: Multilateration Ellipses', fontsize=16)
+            
+            # Save figure
+            plt.tight_layout()
+            plt.subplots_adjust(top=0.9)
+            filename = f"{output_dir}/ellipses_step{step:03d}.png"
+            fig.savefig(filename, dpi=300)
+            plt.close(fig)
+            
+            # Create and save a side view (Y-Z plane) as well
+            fig_side, ax_side = plt.subplots(figsize=(10, 8))
+            
+            # Set limits
+            ax_side.set_xlim(0, self.room_dim[1])
+            ax_side.set_ylim(0, self.room_dim[2])
+            
+            # Draw room boundaries
+            ax_side.plot([0, self.room_dim[1], self.room_dim[1], 0, 0], 
+                         [0, 0, self.room_dim[2], self.room_dim[2], 0], 'k-', alpha=0.5)
+            
+            # Draw speakers in side view (Y-Z plane)
+            for i, pos in enumerate(self.speakers):
+                ax_side.plot(pos[1], pos[2], 'ro', markersize=8, label=f'Speaker {i+1}' if i == 0 else "")
+            
+            # Draw microphones in side view
+            for i, pos in enumerate(self.mics):
+                ax_side.plot(pos[1], pos[2], 'bo', markersize=8, label=f'Mic {i+1}' if i == 0 else "")
+            
+            # Draw targets (ground truth) in side view
+            for i, target in enumerate(self.targets):
+                pos = target['history'][step]
+                ax_side.plot(pos[1], pos[2], 'gs', markersize=10, label=f'{target["name"]} (True)' if i == 0 else "")
+            
+            # Draw ellipses in side view (Y-Z plane)
+            for i, ellipse in enumerate(ellipses):
+                speaker_pos = ellipse['speaker_pos']
+                mic_pos = ellipse['mic_pos']
+                path_length = ellipse['path_length']
+                
+                # Calculate ellipse properties (2D projection in Y-Z plane)
+                # For Y-Z plane projection, use second and third component (y, z)
+                foci_distance_yz = np.sqrt((speaker_pos[1] - mic_pos[1])**2 + (speaker_pos[2] - mic_pos[2])**2)
+                
+                # Only draw if the ellipse is physically possible
+                if path_length > foci_distance_yz:
+                    try:
+                        a = path_length / 2  # Semi-major axis
+                        c = foci_distance_yz / 2  # Half distance between foci
+                        b = np.sqrt(a**2 - c**2)  # Semi-minor axis
+                        
+                        # Center of ellipse (Y-Z plane)
+                        center_yz = ((speaker_pos[1] + mic_pos[1])/2, (speaker_pos[2] + mic_pos[2])/2)
+                        
+                        # Angle of ellipse in Y-Z plane
+                        angle_yz = np.arctan2(mic_pos[2] - speaker_pos[2], mic_pos[1] - speaker_pos[1])
+                        angle_deg_yz = np.degrees(angle_yz)
+                        
+                        # Create ellipse
+                        ellipse_patch_yz = Ellipse(xy=center_yz, width=2*a, height=2*b, angle=angle_deg_yz, 
+                                                 fill=False, edgecolor=f'C{i%10}', linestyle='-', alpha=0.7)
+                        ax_side.add_patch(ellipse_patch_yz)
+                        
+                        # Draw a line connecting the foci
+                        ax_side.plot([speaker_pos[1], mic_pos[1]], [speaker_pos[2], mic_pos[2]], 
+                                      color=f'C{i%10}', linestyle=':', alpha=0.5)
+                    except Exception as e:
+                        print(f"Error drawing side-view ellipse: {e}")
+            
+            # Grid and labels for side view
+            ax_side.grid(True, alpha=0.3)
+            ax_side.set_xlabel('Y (m)')
+            ax_side.set_ylabel('Z (m)')
+            ax_side.set_title(f'Step {step}: Multilateration Ellipses (Side view)')
+            
+            # Add legend to side view
+            handles, labels = ax_side.get_legend_handles_labels()
+            by_label = dict(zip(labels, handles))
+            ax_side.legend(by_label.values(), by_label.keys(), loc='upper right')
+            
+            # Save side view figure
+            plt.tight_layout()
+            filename = f"{output_dir}/ellipses_side_step{step:03d}.png"
+            fig_side.savefig(filename, dpi=300)
+            plt.close(fig_side)
+            
+        except Exception as e:
+            print(f"Error in _visualize_ellipses: {e}")
+            # Fallback to simple top-down view if the multi-view approach fails
+            try:
+                # Create a figure for 2D view (top-down)
+                fig, ax = plt.subplots(figsize=(10, 8))
+                
+                # Set limits
+                ax.set_xlim(0, self.room_dim[0])
+                ax.set_ylim(0, self.room_dim[1])
+                
+                # Draw room boundaries
+                ax.plot([0, self.room_dim[0], self.room_dim[0], 0, 0], 
+                      [0, 0, self.room_dim[1], self.room_dim[1], 0], 'k-', alpha=0.5)
+                
+                # Draw speakers
+                for i, pos in enumerate(self.speakers):
+                    ax.plot(pos[0], pos[1], 'ro', markersize=8, label=f'Speaker {i+1}' if i == 0 else "")
+                
+                # Draw microphones
+                for i, pos in enumerate(self.mics):
+                    ax.plot(pos[0], pos[1], 'bo', markersize=8, label=f'Mic {i+1}' if i == 0 else "")
+                
+                # Draw targets (ground truth)
+                for i, target in enumerate(self.targets):
+                    pos = target['history'][step]
+                    ax.plot(pos[0], pos[1], 'gs', markersize=10, label=f'{target["name"]} (True)' if i == 0 else "")
+                
+                # Draw ellipses
+                for i, ellipse in enumerate(ellipses):
+                    speaker_pos = ellipse['speaker_pos']
+                    mic_pos = ellipse['mic_pos']
+                    path_length = ellipse['path_length']
+                    
+                    # Calculate ellipse properties (2D projection)
+                    foci_distance = np.linalg.norm(speaker_pos[:2] - mic_pos[:2])
+                    
+                    # Only draw if the ellipse is physically possible
+                    if path_length > foci_distance:
+                        a = path_length / 2  # Semi-major axis
+                        c = foci_distance / 2  # Half distance between foci
+                        b = np.sqrt(a**2 - c**2)  # Semi-minor axis
+                        
+                        # Center of ellipse
+                        center = (speaker_pos[:2] + mic_pos[:2]) / 2
+                        
+                        # Angle of ellipse
+                        angle = np.arctan2(mic_pos[1] - speaker_pos[1], mic_pos[0] - speaker_pos[0])
+                        angle_deg = np.degrees(angle)
+                        
+                        # Create ellipse
+                        ellipse_patch = Ellipse(xy=center, width=2*a, height=2*b, angle=angle_deg, 
+                                            fill=False, edgecolor=f'C{i%10}', linestyle='-', alpha=0.7,
+                                            label=f'Ellipse S{ellipse["speaker_idx"]}→M{ellipse["mic_idx"]}' if i == 0 else "")
+                        ax.add_patch(ellipse_patch)
+                        
+                        # Draw a line connecting the foci
+                        ax.plot([speaker_pos[0], mic_pos[0]], [speaker_pos[1], mic_pos[1]], 
+                              color=f'C{i%10}', linestyle=':', alpha=0.5)
+                
+                # Legend
+                handles, labels = ax.get_legend_handles_labels()
+                by_label = dict(zip(labels, handles))
+                ax.legend(by_label.values(), by_label.keys(), loc='upper right')
+                
+                # Grid and labels
+                ax.grid(True, alpha=0.3)
+                ax.set_xlabel('X (m)')
+                ax.set_ylabel('Y (m)')
+                ax.set_title(f'Step {step}: Multilateration Ellipses (Top-down view)')
+                
+                # Save figure
+                plt.tight_layout()
+                filename = f"{output_dir}/ellipses_step{step:03d}.png"
+                fig.savefig(filename, dpi=300)
+                plt.close(fig)
+            except Exception as e2:
+                print(f"Error in fallback visualization: {e2}")
         
     def _create_ellipses_animation(self, output_dir):
         """Create an animation of ellipses over time
