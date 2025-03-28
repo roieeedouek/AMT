@@ -40,7 +40,7 @@ class AcousticTracker:
         self.kalman_filters = {}
     
     def setup_room(self):
-        """Set up the room, speakers, and microphones"""
+        """Set up the room, speakers, and microphones with optimized geometry"""
         width, length, height = self.room_dim
         
         # Create the room with material
@@ -57,7 +57,7 @@ class AcousticTracker:
         self.speakers = [
             # Front speakers
             np.array([0.2, 0.5, 1.0]),         # Front Left
-            np.array([width/2, 0.3, 1.0]),     # Center
+            np.array([width/2, 0.3, 0.7]),     # Center
             np.array([width - 0.2, 0.5, 1.0]), # Front Right
             # Surround speakers
             np.array([0.5, length - 0.5, 1.2]),         # Surround Left
@@ -66,9 +66,10 @@ class AcousticTracker:
         
         # Microphone positions - soundbar-like arrangement at the front
         self.mics = [
-            np.array([width/2 - 0.4, 0.3, 1.0]),  # Left Mic
-            np.array([width/2 + 0.4, 0.3, 1.0]),  # Right Mic
-            np.array([width/2      , 0.3, 1.3]),  # Center Mic
+            np.array([width/2 - 0.5, 0.3, 1.0]),  # Left Mic
+            np.array([width/2 + 0.5, 0.3, 1.0]),  # Right Mic
+            np.array([width/2      , 0.3, 0.9]),  # Center Mic Up
+            np.array([width/2      , 0.3, 1.1]),  # Center Mic Down
         ]
         
         # Create microphone array
@@ -85,6 +86,39 @@ class AcousticTracker:
                 direct_dist = np.linalg.norm(mic_pos - speaker_pos)
                 direct_delay_samples = int(direct_dist / self.c * self.fs)
                 self.direct_delays[(s_idx, m_idx)] = direct_delay_samples
+                
+        # Enhancement 4: Calculate geometric quality for z-resolution
+        # This helps us estimate how well our setup can resolve z-position
+        try:
+            z_resolution_quality = self._calculate_geometry_quality()
+            print(f"Z-axis resolution quality: {z_resolution_quality:.2f} (higher is better)")
+        except Exception as e:
+            print(f"Warning: Could not calculate geometry quality: {str(e)}")
+    
+    def _calculate_geometry_quality(self):
+        """Calculate the geometric quality for z-axis resolution
+        
+        Returns:
+            float: A quality metric (higher is better)
+        """
+        # A simple metric that measures diversity in vertical angles
+        vertical_angles = []
+        
+        # Calculate angles between all speaker-mic pairs
+        for speaker_pos in self.speakers:
+            for mic_pos in self.mics:
+                # Vector from speaker to mic
+                vec = mic_pos - speaker_pos
+                
+                # Calculate vertical angle
+                horizontal_dist = np.sqrt(vec[0]**2 + vec[1]**2)
+                vertical_angle = np.arctan2(vec[2], horizontal_dist)
+                vertical_angles.append(vertical_angle)
+        
+        # Calculate standard deviation of angles
+        # Higher std dev means more diverse angles, which is better for z-resolution
+        vertical_angles = np.array(vertical_angles)
+        return np.std(vertical_angles) * 10  # Scale up for readability
     
     def generate_zc_sequences(self, n_speakers, seq_length=127):
         """Generate unique Zadoff-Chu sequences for each speaker
@@ -128,7 +162,7 @@ class AcousticTracker:
         return sequences
     
     def init_kalman_filter(self, target_id, pos, dt=0.1):
-        """Initialize a Kalman filter for a target
+        """Initialize an enhanced Kalman filter for a target with acceleration model
         
         Args:
             target_id (int): Target ID
@@ -138,29 +172,51 @@ class AcousticTracker:
         Returns:
             KalmanFilter: Initialized Kalman filter
         """
-        # We'll track 3D position and velocity: [x, y, z, vx, vy, vz]
-        dim_x = 6  # State dimension
+        # Enhancement 3: Add acceleration to the state model
+        # We'll track 3D position, velocity, and acceleration: [x, y, z, vx, vy, vz, ax, ay, az]
+        dim_x = 9  # Expanded state dimension
         dim_z = 3  # Measurement dimension (x, y, z position)
         
         # Create Kalman filter
         kf = KalmanFilter(dim_x=dim_x, dim_z=dim_z)
         
-        # State transition matrix (pos += vel * dt)
+        # State transition matrix for constant acceleration model
+        # [1, 0, 0, dt, 0, 0, 0.5*dt^2, 0, 0]
+        # [0, 1, 0, 0, dt, 0, 0, 0.5*dt^2, 0]
+        # [0, 0, 1, 0, 0, dt, 0, 0, 0.5*dt^2]
+        # [0, 0, 0, 1, 0, 0, dt, 0, 0]
+        # [0, 0, 0, 0, 1, 0, 0, dt, 0]
+        # [0, 0, 0, 0, 0, 1, 0, 0, dt]
+        # [0, 0, 0, 0, 0, 0, 1, 0, 0]
+        # [0, 0, 0, 0, 0, 0, 0, 1, 0]
+        # [0, 0, 0, 0, 0, 0, 0, 0, 1]
         kf.F = np.eye(dim_x)
-        kf.F[:3, 3:] = np.eye(3) * dt
+        # Position updated by velocity
+        kf.F[:3, 3:6] = np.eye(3) * dt
+        # Position updated by acceleration (0.5 * dt^2)
+        kf.F[:3, 6:9] = np.eye(3) * 0.5 * dt * dt
+        # Velocity updated by acceleration
+        kf.F[3:6, 6:9] = np.eye(3) * dt
         
         # Measurement function (we only measure position)
         kf.H = np.zeros((dim_z, dim_x))
         kf.H[:3, :3] = np.eye(3)
         
-        # Covariance matrices - tuned for better precision
+        # Process noise covariance - tuned for better precision
         # Lower process noise for more stable tracking
-        q = 0.001  # Reduced for smoother tracking
+        q = 0.001  # Base process noise
         
         # Use less process noise for z-axis to make it more stable
-        q_pos = np.array([q, q, q*0.5])  # Reduce z process noise for stability
-        q_vel = np.array([q*10, q*10, q*5])  # Reduce z velocity noise too
-        q_dim = block_diag(q_pos[0], q_pos[1], q_pos[2], q_vel[0], q_vel[1], q_vel[2])
+        q_pos = np.array([q, q, q*0.5])       # Position process noise
+        q_vel = np.array([q*5, q*5, q*2.5])   # Velocity process noise
+        q_acc = np.array([q*10, q*10, q*5])   # Acceleration process noise
+        
+        # Create diagonal process noise matrix
+        q_dim = block_diag(
+            q_pos[0], q_pos[1], q_pos[2],
+            q_vel[0], q_vel[1], q_vel[2],
+            q_acc[0], q_acc[1], q_acc[2]
+        )
         kf.Q = q_dim
         
         # Adjust measurement noise for better z-axis stability
@@ -173,13 +229,20 @@ class AcousticTracker:
         # Initial state
         kf.x = np.zeros(dim_x)
         kf.x[:3] = pos  # Position
-        if target_id < len(self.targets):
-            kf.x[3:] = self.targets[target_id]['velocity']  # Velocity
         
-        # Initial covariance
+        # Set initial velocity if available
+        if target_id < len(self.targets):
+            kf.x[3:6] = self.targets[target_id]['velocity']  # Velocity
+        
+        # Initial acceleration is zero
+        kf.x[6:9] = np.zeros(3)
+        
+        # Initial state covariance
         kf.P = np.eye(dim_x) * 0.1
         # Higher initial uncertainty for z-axis
-        kf.P[2, 2] = 0.2  # More uncertainty in z position initially
+        kf.P[2, 2] = 0.2    # More uncertainty in z position
+        kf.P[5, 5] = 0.3    # More uncertainty in z velocity
+        kf.P[8, 8] = 0.5    # More uncertainty in z acceleration
         
         return kf
     
@@ -594,7 +657,7 @@ class AcousticTracker:
         return total_error
     
     def multilateration_twostage(self, ellipses, coarse_res=20, fine_res=50, save_error_map=False):
-        """Two-stage multilateration for higher resolution
+        """Three-stage multilateration with adaptive resolution and historical tracking
         
         Args:
             ellipses (list): List of ellipse dictionaries
@@ -608,12 +671,16 @@ class AcousticTracker:
         if not ellipses:
             return None
         
-        # Try to get previous position for continuity constraints
+        # Enhancement 3: Historical Tracking Improvements - Get trajectory information
         prev_point = None
+        trajectory_direction = None
+        trajectory_points = []
+        target_id = None
+        
         try:
             # Check if we have a target ID for these ellipses
             for target_idx, target_ellipses in enumerate(self.match_ellipses_to_targets(ellipses)):
-                if ellipses[0] in target_ellipses:
+                if any(e in target_ellipses for e in ellipses):
                     # Found the target that these ellipses belong to
                     target_id = target_idx
                     
@@ -622,17 +689,31 @@ class AcousticTracker:
                     if kf is not None:
                         # Use the Kalman state as previous point
                         prev_point = kf.x[:3].copy()
+                        
+                        # Get trajectory information if available
+                        target = self.targets[target_id]
+                        if len(target['filtered_positions']) >= 3:
+                            # Get the last several points to create a trajectory
+                            trajectory_points = target['filtered_positions'][-3:]
+                            
+                            # Calculate trajectory direction
+                            if len(trajectory_points) >= 2:
+                                trajectory_direction = trajectory_points[-1] - trajectory_points[-2]
+                                # Normalize direction vector
+                                trajectory_norm = np.linalg.norm(trajectory_direction)
+                                if trajectory_norm > 0:
+                                    trajectory_direction = trajectory_direction / trajectory_norm
                     break
         except Exception as e:
-            print(f"Warning: Error getting previous point: {str(e)}")
+            print(f"Warning: Error getting trajectory information: {str(e)}")
                 
+        # Enhancement 2: Dynamic Resolution Adaptation
         # Increase z-resolution for better precision
         z_res_multiplier = 2
         
         # Stage 1: Coarse search
         x = np.linspace(0, self.room_dim[0], coarse_res)
         y = np.linspace(0, self.room_dim[1], coarse_res)
-        # Keep increased search range, but add more resolution
         z = np.linspace(0, self.room_dim[2] + 0.3, coarse_res * z_res_multiplier)
         
         best_point = None
@@ -668,33 +749,108 @@ class AcousticTracker:
             except Exception as e:
                 print(f"Warning: Error creating coarse error maps: {str(e)}")
         
-        # Search on coarse grid with continuity constraints
-        for xi in x:
-            for yi in y:
-                for zi in z:
-                    point = np.array([xi, yi, zi])
-                    total_error = self._compute_error(point, ellipses, prev_point)
-                    
-                    if total_error < min_error:
-                        min_error = total_error
-                        best_point = point.copy()
+        # Enhancement 3 continued: Use trajectory information to guide search
+        if prev_point is not None and trajectory_direction is not None:
+            # Create a predicted position based on trajectory
+            predicted_point = prev_point + trajectory_direction * 0.1  # Assume small movement
+            
+            # Make sure the predicted point is within room bounds
+            predicted_point[0] = np.clip(predicted_point[0], 0, self.room_dim[0])
+            predicted_point[1] = np.clip(predicted_point[1], 0, self.room_dim[1])
+            predicted_point[2] = np.clip(predicted_point[2], 0, self.room_dim[2])
+            
+            # First check near the predicted point to potentially skip coarse search
+            x_pred = np.linspace(max(0, predicted_point[0] - 0.4), 
+                               min(self.room_dim[0], predicted_point[0] + 0.4), coarse_res//2)
+            y_pred = np.linspace(max(0, predicted_point[1] - 0.4),
+                               min(self.room_dim[1], predicted_point[1] + 0.4), coarse_res//2)
+            z_pred = np.linspace(max(0, predicted_point[2] - 0.3),
+                               min(self.room_dim[2] + 0.3, predicted_point[2] + 0.3), coarse_res * z_res_multiplier)
+            
+            # Search near predicted position first
+            for xi in x_pred:
+                for yi in y_pred:
+                    for zi in z_pred:
+                        point = np.array([xi, yi, zi])
+                        total_error = self._compute_error(point, ellipses, prev_point)
+                        
+                        if total_error < min_error:
+                            min_error = total_error
+                            best_point = point.copy()
+            
+            # If error is low enough, we can skip the full coarse search
+            skip_coarse = False
+            if min_error < 0.05:  # Threshold for accepting predicted-area search
+                skip_coarse = True
+        
+        # Perform coarse search if needed
+        if best_point is None or (locals().get('skip_coarse', False) == False):
+            # Search on coarse grid with continuity constraints
+            for xi in x:
+                for yi in y:
+                    for zi in z:
+                        point = np.array([xi, yi, zi])
+                        total_error = self._compute_error(point, ellipses, prev_point)
+                        
+                        if total_error < min_error:
+                            min_error = total_error
+                            best_point = point.copy()
         
         if best_point is None:
             return None
         
-        # Stage 2: Fine search around best point
+        # Enhancement 2: Dynamic Resolution Adaptation
+        # Analyze error landscape to detect potential ambiguities
+        error_samples = []
+        ambiguity_detected = False
+        
+        # Sample points around the best point to detect multiple minima
+        if prev_point is not None:
+            test_points = []
+            # Sample around best point
+            for dz in [-0.2, -0.1, 0, 0.1, 0.2]:
+                test_point = best_point.copy()
+                test_point[2] += dz
+                test_points.append(test_point)
+            
+            # Compute errors for test points
+            for point in test_points:
+                error = self._compute_error(point, ellipses, prev_point)
+                error_samples.append((point[2], error))
+            
+            # Check for multiple local minima
+            error_samples.sort(key=lambda x: x[0])  # Sort by z-coordinate
+            errors = np.array([e[1] for e in error_samples])
+            
+            # Simple detection of multiple minima
+            for i in range(1, len(errors)-1):
+                if errors[i] < errors[i-1] and errors[i] < errors[i+1]:
+                    # Found a local minimum
+                    if i > 0 and abs(error_samples[i][0] - best_point[2]) > 0.05:
+                        # There's another minimum away from our current best point
+                        ambiguity_detected = True
+        
+        # Stage 2: Fine search with adaptive resolution based on detected ambiguity
         # Define search region around best point
         x_range = max(0.5, self.room_dim[0] / coarse_res)  # Size of search region
         y_range = max(0.5, self.room_dim[1] / coarse_res)
         z_range = max(0.5, self.room_dim[2] / coarse_res)
         
+        # Enhancement 2: If ambiguity is detected, increase resolution
+        adaptive_fine_res = fine_res
+        adaptive_z_multiplier = z_res_multiplier
+        if ambiguity_detected:
+            adaptive_fine_res = int(fine_res * 1.5)  # 50% more resolution
+            adaptive_z_multiplier = z_res_multiplier * 2  # Double z-resolution
+            z_range = z_range * 1.5  # Expand search range in z-direction
+        
         x = np.linspace(max(0, best_point[0] - x_range/2), 
-                       min(self.room_dim[0], best_point[0] + x_range/2), fine_res)
+                       min(self.room_dim[0], best_point[0] + x_range/2), adaptive_fine_res)
         y = np.linspace(max(0, best_point[1] - y_range/2),
-                       min(self.room_dim[1], best_point[1] + y_range/2), fine_res)
-        # Use higher resolution for z-axis in fine search too
+                       min(self.room_dim[1], best_point[1] + y_range/2), adaptive_fine_res)
         z = np.linspace(max(0, best_point[2] - z_range/2),
-                       min(self.room_dim[2] + 0.3, best_point[2] + z_range/2), fine_res * z_res_multiplier)
+                       min(self.room_dim[2] + 0.3, best_point[2] + z_range/2), 
+                       adaptive_fine_res * adaptive_z_multiplier)
         
         # For debugging: create error maps at fine resolution
         if save_error_map:
@@ -727,6 +883,38 @@ class AcousticTracker:
                     if total_error < min_error:
                         min_error = total_error
                         best_point = point.copy()
+        
+        # Enhancement 3: Apply trajectory consistency check
+        if trajectory_points and len(trajectory_points) >= 2:
+            # Calculate direction from last points
+            last_direction = trajectory_points[-1] - trajectory_points[-2]
+            last_speed = np.linalg.norm(last_direction)
+            
+            if last_speed > 0:
+                # Normalize to get direction vector
+                last_direction = last_direction / last_speed
+                
+                # Calculate direction to new point
+                new_direction = best_point - trajectory_points[-1]
+                new_speed = np.linalg.norm(new_direction)
+                
+                if new_speed > 0:
+                    new_direction = new_direction / new_speed
+                    
+                    # Calculate angle between directions
+                    angle = np.arccos(np.clip(np.dot(last_direction, new_direction), -1.0, 1.0))
+                    
+                    # If angle is too large (sudden direction change) and speed is reasonable
+                    if angle > np.pi/2 and new_speed > 0.5:
+                        # This is likely an ambiguity error - adjust the point
+                        adjusted_point = trajectory_points[-1] + last_direction * new_speed * 0.5
+                        
+                        # Verify that adjusted point still matches ellipses reasonably well
+                        adjusted_error = self._compute_error(adjusted_point, ellipses, prev_point)
+                        
+                        # If error is acceptable, use the adjusted point
+                        if adjusted_error < min_error * 1.5:  # Allow some increase in error
+                            best_point = adjusted_point
         
         return best_point
         
@@ -2117,7 +2305,7 @@ def run_demo():
     try:
         # Run tracking simulation
         print("Running tracking simulation...")
-        tracker.run_tracking(duration=5.0, steps=15)  # More steps for smoother tracking
+        tracker.run_tracking(duration=5.0, steps=40)  # More steps for smoother tracking
     except Exception as e:
         print(f"Error during tracking simulation: {str(e)}")
         import traceback
@@ -2125,22 +2313,22 @@ def run_demo():
     
     try:
         # Visualize correlation for an early and late frame
-        print("\nVisualization of correlation and MTI for frame 4:")
-        fig = tracker.visualize_correlation(step=4)
+        print("\nVisualization of correlation and MTI for frame 5:")
+        fig = tracker.visualize_correlation(step=5)
         if fig:
-            fig.savefig(f"{output_dir}/correlation_frame4.png", dpi=300)
-            print(f"Saved to {output_dir}/correlation_frame4.png")
+            fig.savefig(f"{output_dir}/correlation_frame5.png", dpi=300)
+            print(f"Saved to {output_dir}/correlation_frame5.png")
     except Exception as e:
         print(f"Error generating correlation frame 5: {str(e)}")
     
     try:
-        print("\nVisualization of correlation and MTI for frame 8:")
-        fig = tracker.visualize_correlation(step=8)
+        print("\nVisualization of correlation and MTI for frame 30:")
+        fig = tracker.visualize_correlation(step=30)
         if fig:
-            fig.savefig(f"{output_dir}/correlation_frame8.png", dpi=300)
-            print(f"Saved to {output_dir}/correlation_frame8.png")
+            fig.savefig(f"{output_dir}/correlation_frame30.png", dpi=300)
+            print(f"Saved to {output_dir}/correlation_frame30.png")
     except Exception as e:
-        print(f"Error generating correlation frame 8: {str(e)}")
+        print(f"Error generating correlation frame 30: {str(e)}")
     
     try:
         # Create and save correlation animation
