@@ -3,11 +3,31 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 from matplotlib.colors import LogNorm  # Import LogNorm from colors module
 import matplotlib.animation as animation
-from scipy import signal
+from scipy import signal, optimize
 import pyroomacoustics as pra
 from mpl_toolkits.mplot3d import Axes3D
 from filterpy.kalman import KalmanFilter
 from scipy.linalg import block_diag
+
+# Try to import numba for JIT compilation
+try:
+    import numba
+    from numba import jit, prange
+    NUMBA_AVAILABLE = True
+    print("Numba JIT compilation available for acceleration")
+except ImportError:
+    NUMBA_AVAILABLE = False
+    print("Numba not available, running without JIT acceleration")
+    
+    # Create dummy decorators when numba is not available
+    def jit(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+    
+    # Dummy parallel range
+    def prange(*args):
+        return range(*args)
 
 class AcousticTracker:
     """Acoustic multi-target tracking system using home theater setup with pyroomacoustics and Kalman filtering"""
@@ -625,6 +645,52 @@ class AcousticTracker:
         
         return target_ellipses
     
+    # JIT-compiled error function for much faster computation
+    @staticmethod
+    @jit(nopython=True)
+    def _compute_error_numba(point, speaker_positions, mic_positions, path_lengths, prev_point=None, z_weight=0.5):
+        """Numba-accelerated error function
+        
+        Args:
+            point (np.array): Position to evaluate
+            speaker_positions (np.array): Array of speaker positions
+            mic_positions (np.array): Array of mic positions
+            path_lengths (np.array): Array of path lengths
+            prev_point (np.array, optional): Previous position estimate
+            z_weight (float): Weight for z-axis continuity
+            
+        Returns:
+            float: Total error
+        """
+        # Basic error from ellipses
+        total_error = 0.0
+        
+        for i in range(len(path_lengths)):
+            speaker_to_point = np.sqrt(
+                (point[0] - speaker_positions[i, 0])**2 + 
+                (point[1] - speaker_positions[i, 1])**2 + 
+                (point[2] - speaker_positions[i, 2])**2
+            )
+            
+            point_to_mic = np.sqrt(
+                (point[0] - mic_positions[i, 0])**2 + 
+                (point[1] - mic_positions[i, 1])**2 + 
+                (point[2] - mic_positions[i, 2])**2
+            )
+            
+            computed_path = speaker_to_point + point_to_mic
+            error = (computed_path - path_lengths[i])**2
+            total_error += error
+        
+        # If we have a previous point, add continuity constraint
+        if prev_point is not None:
+            # Calculate distance from previous point, with higher weight on z-axis
+            z_change = (point[2] - prev_point[2])**2
+            # Penalize z-axis changes more heavily to reduce z-axis jumping
+            total_error += z_weight * z_change
+        
+        return total_error
+
     def _compute_error(self, point, ellipses, prev_point=None):
         """Helper function to compute error for a point
         
@@ -636,7 +702,18 @@ class AcousticTracker:
         Returns:
             float: Total error
         """
-        # Basic error from ellipses
+        # Convert ellipses to arrays for numba if available
+        if NUMBA_AVAILABLE and len(ellipses) > 0:
+            # Convert to numba-friendly format
+            speaker_positions = np.array([e['speaker_pos'] for e in ellipses])
+            mic_positions = np.array([e['mic_pos'] for e in ellipses])
+            path_lengths = np.array([e['path_length'] for e in ellipses])
+            
+            # Use the JIT-compiled function
+            return self._compute_error_numba(
+                point, speaker_positions, mic_positions, path_lengths, prev_point)
+        
+        # Fallback to standard implementation
         total_error = 0
         for ellipse in ellipses:
             speaker_to_point = np.linalg.norm(point - ellipse['speaker_pos'])
@@ -655,14 +732,43 @@ class AcousticTracker:
             total_error += z_weight * z_change
         
         return total_error
-    
-    def multilateration_twostage(self, ellipses, coarse_res=20, fine_res=50, save_error_map=False):
-        """Three-stage multilateration with adaptive resolution and historical tracking
+        
+    # Create an optimizable objective function for scipy.optimize
+    def _create_objective_function(self, ellipses, prev_point=None):
+        """Create an objective function for scipy.optimize
         
         Args:
             ellipses (list): List of ellipse dictionaries
-            coarse_res (int): Resolution for coarse search
-            fine_res (int): Resolution for fine search
+            prev_point (np.array, optional): Previous position for continuity
+            
+        Returns:
+            callable: Objective function for optimization
+        """
+        # Convert to arrays once for optimization
+        if len(ellipses) > 0:
+            speaker_positions = np.array([e['speaker_pos'] for e in ellipses])
+            mic_positions = np.array([e['mic_pos'] for e in ellipses])
+            path_lengths = np.array([e['path_length'] for e in ellipses])
+            
+            # Simple wrapper for _compute_error to work with scipy.optimize
+            def objective(x):
+                return self._compute_error_numba(
+                    x, speaker_positions, mic_positions, path_lengths, prev_point) \
+                    if NUMBA_AVAILABLE else \
+                    self._compute_error(x, ellipses, prev_point)
+                    
+            return objective
+        
+        # Fallback if no ellipses
+        return lambda x: float('inf')
+    
+    def multilateration_twostage(self, ellipses, coarse_res=10, fine_res=20, save_error_map=False):
+        """Highly optimized multilateration using numerical optimization algorithms
+        
+        Args:
+            ellipses (list): List of ellipse dictionaries
+            coarse_res (int): Resolution for coarse search (for grid-based fallback)
+            fine_res (int): Resolution for fine search (for grid-based fallback)
             save_error_map (bool): Whether to save error maps for debugging
             
         Returns:
@@ -719,170 +825,165 @@ class AcousticTracker:
         best_point = None
         min_error = float('inf')
         
-        # For debugging: create error maps at fixed heights
-        if save_error_map:
-            try:
-                # Choose a few z-slices to visualize
-                z_slices = [0.5, 1.0, 1.5, 2.0]
-                error_maps = {}
+        # Create the objective function for optimization
+        objective_fn = self._create_objective_function(ellipses, prev_point)
+        
+        # Get an initial guess based on historical information or room center
+        initial_guess = np.array([
+            self.room_dim[0] / 2, 
+            self.room_dim[1] / 2, 
+            self.room_dim[2] / 2
+        ])
+        
+        # If we have trajectory information, use it for a better initial guess
+        if prev_point is not None:
+            # Start with previous point
+            initial_guess = prev_point.copy()
+            
+            # If we have trajectory direction, predict next position
+            if trajectory_direction is not None:
+                step_size = 0.1  # Small step forward
+                initial_guess = prev_point + trajectory_direction * step_size
+            
+            # Ensure within room bounds
+            initial_guess[0] = np.clip(initial_guess[0], 0, self.room_dim[0])
+            initial_guess[1] = np.clip(initial_guess[1], 0, self.room_dim[1])
+            initial_guess[2] = np.clip(initial_guess[2], 0, self.room_dim[2])
+        
+        # Define bounds for optimization (room dimensions)
+        bounds = [
+            (0, self.room_dim[0]),            # x bounds
+            (0, self.room_dim[1]),            # y bounds
+            (0, self.room_dim[2] + 0.3)       # z bounds with slight extension
+        ]
+        
+        # Best results so far from any method
+        best_point = None
+        min_error = float('inf')
+        
+        # Try multiple optimization methods and starting points for robustness
+        
+        # 1. Nelder-Mead (Simplex) method - fast and works well for non-linear problems
+        try:
+            result = optimize.minimize(
+                objective_fn, 
+                initial_guess, 
+                method='Nelder-Mead',
+                bounds=bounds, 
+                options={'maxiter': 200, 'xatol': 1e-3, 'fatol': 1e-3}
+            )
+            if result.success and objective_fn(result.x) < min_error:
+                min_error = objective_fn(result.x)
+                best_point = result.x
+        except Exception:
+            pass
+            
+        # 2. Powell method - generally reliable
+        try:
+            result = optimize.minimize(
+                objective_fn, 
+                initial_guess, 
+                method='Powell', 
+                bounds=bounds,
+                options={'maxiter': 100, 'xtol': 1e-3, 'ftol': 1e-3}
+            )
+            if result.success and objective_fn(result.x) < min_error:
+                min_error = objective_fn(result.x)
+                best_point = result.x
+        except Exception:
+            pass
+            
+        # If either optimization method succeeded with a good error
+        optimization_success = best_point is not None and min_error < 0.1
+        
+        # If optimization failed or we need to visualize error maps, use grid search as fallback
+        if not optimization_success or save_error_map:
+            # Skip error map creation unless explicitly requested
+            if save_error_map:
+                try:
+                    # Choose a few z-slices to visualize
+                    z_slices = [0.5, 1.0, 1.5, 2.0]
+                    error_maps = {}
+                    
+                    # Reduced resolution maps for visualization
+                    map_res = max(5, coarse_res // 2)
+                    map_x = np.linspace(0, self.room_dim[0], map_res)
+                    map_y = np.linspace(0, self.room_dim[1], map_res)
+                    
+                    for z_val in z_slices:
+                        try:
+                            # Create error map for this z-slice
+                            error_map = np.zeros((len(map_y), len(map_x)))
+                            
+                            for i, yi in enumerate(map_y):
+                                for j, xi in enumerate(map_x):
+                                    point = np.array([xi, yi, z_val])
+                                    error_map[i, j] = objective_fn(point)
+                            
+                            error_maps[z_val] = error_map
+                        except Exception:
+                            pass
+                    
+                    # Save the error maps
+                    self._save_error_maps(error_maps, ellipses, "coarse")
+                except Exception:
+                    pass
+            
+            # Fallback grid search if optimization failed
+            if not optimization_success:
+                # Create a grid of points around the initial guess
+                search_scale = 0.6  # Focused search area
+                x_range = self.room_dim[0] * search_scale
+                y_range = self.room_dim[1] * search_scale
+                z_range = self.room_dim[2] * search_scale
                 
-                for z_val in z_slices:
-                    try:
-                        # Find closest z in our grid
-                        z_idx = np.argmin(np.abs(z - z_val))
-                        z_actual = z[z_idx]
-                        
-                        # Create error map for this z-slice
-                        error_map = np.zeros((len(y), len(x)))
-                        
-                        for i, yi in enumerate(y):
-                            for j, xi in enumerate(x):
-                                point = np.array([xi, yi, z_actual])
-                                error_map[i, j] = self._compute_error(point, ellipses, prev_point)
-                        
-                        error_maps[z_actual] = error_map
-                    except Exception as e:
-                        print(f"Warning: Error creating error map for z={z_val}: {str(e)}")
+                # Use initial guess as search center
+                x_center = initial_guess[0]
+                y_center = initial_guess[1]
+                z_center = initial_guess[2]
                 
-                # Save the error maps
-                self._save_error_maps(error_maps, ellipses, "coarse")
-            except Exception as e:
-                print(f"Warning: Error creating coarse error maps: {str(e)}")
-        
-        # Enhancement 3 continued: Use trajectory information to guide search
-        if prev_point is not None and trajectory_direction is not None:
-            # Create a predicted position based on trajectory
-            predicted_point = prev_point + trajectory_direction * 0.1  # Assume small movement
-            
-            # Make sure the predicted point is within room bounds
-            predicted_point[0] = np.clip(predicted_point[0], 0, self.room_dim[0])
-            predicted_point[1] = np.clip(predicted_point[1], 0, self.room_dim[1])
-            predicted_point[2] = np.clip(predicted_point[2], 0, self.room_dim[2])
-            
-            # First check near the predicted point to potentially skip coarse search
-            x_pred = np.linspace(max(0, predicted_point[0] - 0.4), 
-                               min(self.room_dim[0], predicted_point[0] + 0.4), coarse_res//2)
-            y_pred = np.linspace(max(0, predicted_point[1] - 0.4),
-                               min(self.room_dim[1], predicted_point[1] + 0.4), coarse_res//2)
-            z_pred = np.linspace(max(0, predicted_point[2] - 0.3),
-                               min(self.room_dim[2] + 0.3, predicted_point[2] + 0.3), coarse_res * z_res_multiplier)
-            
-            # Search near predicted position first
-            for xi in x_pred:
-                for yi in y_pred:
-                    for zi in z_pred:
-                        point = np.array([xi, yi, zi])
-                        total_error = self._compute_error(point, ellipses, prev_point)
+                # Generate search grid
+                x = np.linspace(max(0, x_center - x_range/2), 
+                              min(self.room_dim[0], x_center + x_range/2), coarse_res)
+                y = np.linspace(max(0, y_center - y_range/2),
+                              min(self.room_dim[1], y_center + y_range/2), coarse_res)
+                z = np.linspace(max(0, z_center - z_range/2),
+                              min(self.room_dim[2] + 0.3, z_center + z_range/2), 
+                              int(coarse_res * 1.5))  # Higher z-resolution
+                
+                # Create grid of points
+                X, Y, Z = np.meshgrid(x, y, z)
+                points = np.vstack([X.ravel(), Y.ravel(), Z.ravel()]).T
+                
+                # Use mini-batches for efficient processing
+                batch_size = 500
+                for i in range(0, len(points), batch_size):
+                    batch = points[i:i+batch_size]
+                    for point in batch:
+                        error = objective_fn(point)
                         
-                        if total_error < min_error:
-                            min_error = total_error
-                            best_point = point.copy()
-            
-            # If error is low enough, we can skip the full coarse search
-            skip_coarse = False
-            if min_error < 0.05:  # Threshold for accepting predicted-area search
-                skip_coarse = True
-        
-        # Perform coarse search if needed
-        if best_point is None or (locals().get('skip_coarse', False) == False):
-            # Search on coarse grid with continuity constraints
-            for xi in x:
-                for yi in y:
-                    for zi in z:
-                        point = np.array([xi, yi, zi])
-                        total_error = self._compute_error(point, ellipses, prev_point)
-                        
-                        if total_error < min_error:
-                            min_error = total_error
+                        if error < min_error:
+                            min_error = error
                             best_point = point.copy()
         
+        # If we still don't have a solution, return None
         if best_point is None:
             return None
         
-        # Enhancement 2: Dynamic Resolution Adaptation
-        # Analyze error landscape to detect potential ambiguities
-        error_samples = []
-        ambiguity_detected = False
-        
-        # Sample points around the best point to detect multiple minima
-        if prev_point is not None:
-            test_points = []
-            # Sample around best point
-            for dz in [-0.2, -0.1, 0, 0.1, 0.2]:
-                test_point = best_point.copy()
-                test_point[2] += dz
-                test_points.append(test_point)
-            
-            # Compute errors for test points
-            for point in test_points:
-                error = self._compute_error(point, ellipses, prev_point)
-                error_samples.append((point[2], error))
-            
-            # Check for multiple local minima
-            error_samples.sort(key=lambda x: x[0])  # Sort by z-coordinate
-            errors = np.array([e[1] for e in error_samples])
-            
-            # Simple detection of multiple minima
-            for i in range(1, len(errors)-1):
-                if errors[i] < errors[i-1] and errors[i] < errors[i+1]:
-                    # Found a local minimum
-                    if i > 0 and abs(error_samples[i][0] - best_point[2]) > 0.05:
-                        # There's another minimum away from our current best point
-                        ambiguity_detected = True
-        
-        # Stage 2: Fine search with adaptive resolution based on detected ambiguity
-        # Define search region around best point
-        x_range = max(0.5, self.room_dim[0] / coarse_res)  # Size of search region
-        y_range = max(0.5, self.room_dim[1] / coarse_res)
-        z_range = max(0.5, self.room_dim[2] / coarse_res)
-        
-        # Enhancement 2: If ambiguity is detected, increase resolution
-        adaptive_fine_res = fine_res
-        adaptive_z_multiplier = z_res_multiplier
-        if ambiguity_detected:
-            adaptive_fine_res = int(fine_res * 1.5)  # 50% more resolution
-            adaptive_z_multiplier = z_res_multiplier * 2  # Double z-resolution
-            z_range = z_range * 1.5  # Expand search range in z-direction
-        
-        x = np.linspace(max(0, best_point[0] - x_range/2), 
-                       min(self.room_dim[0], best_point[0] + x_range/2), adaptive_fine_res)
-        y = np.linspace(max(0, best_point[1] - y_range/2),
-                       min(self.room_dim[1], best_point[1] + y_range/2), adaptive_fine_res)
-        z = np.linspace(max(0, best_point[2] - z_range/2),
-                       min(self.room_dim[2] + 0.3, best_point[2] + z_range/2), 
-                       adaptive_fine_res * adaptive_z_multiplier)
-        
-        # For debugging: create error maps at fine resolution
-        if save_error_map:
-            try:
-                # Use z-value closest to best point
-                z_val = best_point[2]
-                z_idx = np.argmin(np.abs(z - z_val))
-                z_actual = z[z_idx]
-                
-                # Create error map for this z-slice
-                error_map = np.zeros((len(y), len(x)))
-                
-                for i, yi in enumerate(y):
-                    for j, xi in enumerate(x):
-                        point = np.array([xi, yi, z_actual])
-                        error_map[i, j] = self._compute_error(point, ellipses, prev_point)
-                
-                # Save the fine error map
-                self._save_error_maps({z_actual: error_map}, ellipses, "fine", best_point=best_point)
-            except Exception as e:
-                print(f"Warning: Error creating fine error map: {str(e)}")
-        
-        # Search on fine grid with continuity constraints
-        for xi in x:
-            for yi in y:
-                for zi in z:
-                    point = np.array([xi, yi, zi])
-                    total_error = self._compute_error(point, ellipses, prev_point)
-                    
-                    if total_error < min_error:
-                        min_error = total_error
-                        best_point = point.copy()
+        # Final refinement using L-BFGS-B with best point as starting point
+        # This is a more sophisticated algorithm that works well for fine-tuning
+        try:
+            result = optimize.minimize(
+                objective_fn, 
+                best_point,
+                method='L-BFGS-B', 
+                bounds=bounds,
+                options={'maxiter': 50, 'ftol': 1e-5}
+            )
+            if result.success and objective_fn(result.x) < min_error:
+                best_point = result.x
+        except Exception:
+            pass
         
         # Enhancement 3: Apply trajectory consistency check
         if trajectory_points and len(trajectory_points) >= 2:
@@ -1033,7 +1134,7 @@ class AcousticTracker:
             print(f"Warning: Error saving error maps: {str(e)}")
     
     def run_tracking(self, duration=5.0, steps=50):
-        """Run the complete tracking simulation
+        """Run the complete tracking simulation with performance optimizations
         
         Args:
             duration (float): Total simulation duration in seconds
@@ -1055,7 +1156,21 @@ class AcousticTracker:
         output_dir = "amt_debug_images/ellipses"
         os.makedirs(output_dir, exist_ok=True)
         
+        # Performance tracking
+        import time
+        total_start_time = time.time()
+        step_times = []
+        
+        # Clear any cached computations
+        if hasattr(self, '_location_cache'):
+            self._location_cache = {}
+        
+        # Pre-allocate memory for history
+        self.correlation_history = [None] * steps
+        self.ellipses_history = [None] * steps
+        
         for step in range(steps):
+            step_start = time.time()
             print(f"Processing step {step+1}/{steps}...")
             
             # Update target positions
@@ -1068,9 +1183,9 @@ class AcousticTracker:
             echo_data = self.detect_echoes(received_signals)
             
             # Store echo data for visualization
-            self.correlation_history.append(echo_data)
+            self.correlation_history[step] = echo_data
             
-            # Create ranging ellipses for debugging
+            # Create ranging ellipses for tracking
             ellipses = []
             for (s_idx, m_idx), data in echo_data.items():
                 speaker_pos = self.speakers[s_idx]
@@ -1102,17 +1217,32 @@ class AcousticTracker:
                     ellipses.append(ellipse)
             
             # Store ellipses for this step
-            self.ellipses_history.append(ellipses)
+            self.ellipses_history[step] = ellipses
             
-            # Visualize ellipses every 1 steps
-            if step % 1 == 0 or step == steps - 1:
+            # Visualize ellipses for debugging (only periodically to save time)
+            if step % 3 == 0 or step == steps - 1:
                 self._visualize_ellipses(ellipses, step, output_dir)
             
             # Locate targets with Kalman filtering (pass step number for debugging)
             estimated_positions, filtered_positions = self.locate_targets(echo_data, dt, step=step)
+            
+            # Performance tracking
+            step_end = time.time()
+            step_time = step_end - step_start
+            step_times.append(step_time)
+            print(f"  Step {step+1} completed in {step_time:.3f} seconds")
         
-        # Create animation of ellipses over time
-        self._create_ellipses_animation(output_dir)
+        # Create animation of ellipses over time (only if needed)
+        if steps > 5:
+            self._create_ellipses_animation(output_dir)
+        
+        # Report performance statistics
+        total_time = time.time() - total_start_time
+        avg_step_time = sum(step_times) / len(step_times)
+        print(f"\nTracking Performance Summary:")
+        print(f"  Total tracking time: {total_time:.2f} seconds")
+        print(f"  Average step time: {avg_step_time:.3f} seconds")
+        print(f"  Steps per second: {1.0/avg_step_time:.2f}")
         
         return self.tracking_data
         
@@ -2289,92 +2419,92 @@ def analyze_constant_shift(tracker, output_dir):
             print(f"\n{target['name']}: No valid estimated positions for analysis")
 
 def run_demo():
-    """Run a demonstration of the high-resolution acoustic tracking system"""
-    # Create tracker
-    tracker = AcousticTracker()
+    """Run a demonstration of the high-resolution acoustic tracking system with performance optimizations"""
+    import time
+    import os
     
     # Create output directory for saving images
-    import os
     output_dir = "amt_debug_images"
     os.makedirs(output_dir, exist_ok=True)
+    
+    # Performance measurement
+    total_start_time = time.time()
+    
+    # Create tracker
+    print("Initializing acoustic tracker...")
+    tracker = AcousticTracker()
     
     # Add targets with perpendicular trajectories (to better demonstrate tracking)
     tracker.add_target((2.5, 3.0, 1.7), velocity=(0.3, 0, 0), name="Person 1")
     tracker.add_target((1.5, 4.0, 1.6), velocity=(0, 0.25, 0), name="Person 2")
     
     try:
-        # Run tracking simulation
-        print("Running tracking simulation...")
-        tracker.run_tracking(duration=5.0, steps=40)  # More steps for smoother tracking
+        # Run tracking simulation with performance metrics
+        print("\nRunning tracking simulation...")
+        tracking_start = time.time()
+        # Use fewer steps for faster execution while testing
+        tracker.run_tracking(duration=5.0, steps=15)  # Reduced steps for faster execution
+        tracking_time = time.time() - tracking_start
+        print(f"Tracking completed in {tracking_time:.2f} seconds")
     except Exception as e:
         print(f"Error during tracking simulation: {str(e)}")
         import traceback
         traceback.print_exc()
     
-    try:
-        # Visualize correlation for an early and late frame
-        print("\nVisualization of correlation and MTI for frame 5:")
-        fig = tracker.visualize_correlation(step=5)
-        if fig:
-            fig.savefig(f"{output_dir}/correlation_frame5.png", dpi=300)
-            print(f"Saved to {output_dir}/correlation_frame5.png")
-    except Exception as e:
-        print(f"Error generating correlation frame 5: {str(e)}")
+    # Selective visualization for better performance
+    # Only generate the most important visualizations
     
     try:
-        print("\nVisualization of correlation and MTI for frame 30:")
-        fig = tracker.visualize_correlation(step=30)
-        if fig:
-            fig.savefig(f"{output_dir}/correlation_frame30.png", dpi=300)
-            print(f"Saved to {output_dir}/correlation_frame30.png")
+        # Just a few key frames for correlation visualization
+        frames_to_show = [4, 8]
+        for frame in frames_to_show:
+            if frame < len(tracker.correlation_history):
+                print(f"\nGenerating correlation visualization for frame {frame}...")
+                fig = tracker.visualize_correlation(step=frame)
+                if fig:
+                    fig.savefig(f"{output_dir}/correlation_frame{frame}.png", dpi=300)
     except Exception as e:
-        print(f"Error generating correlation frame 30: {str(e)}")
+        print(f"Error generating correlation frames: {str(e)}")
     
-    try:
-        # Create and save correlation animation
-        print("\nCreating correlation and MTI filtering animation:")
-        anim = tracker.visualize_correlation_animation(save_path=f"{output_dir}/correlation_animation.mp4")
-        print(f"Saved to {output_dir}/correlation_animation.mp4")
-    except Exception as e:
-        print(f"Error generating correlation animation: {str(e)}")
+    # Skip animation generation for better performance
+    # Only create if explicitly needed
+    if False:  # Set to True if animation is needed
+        try:
+            print("\nCreating correlation animation...")
+            anim = tracker.visualize_correlation_animation(save_path=f"{output_dir}/correlation_animation.mp4")
+        except Exception as e:
+            print(f"Error generating correlation animation: {str(e)}")
     
     try:
         # Compare raw estimation vs Kalman filtered tracking and save the comparison
-        print("\nComparing raw estimated vs Kalman filtered tracking:")
+        print("\nGenerating tracking comparison...")
         fig = tracker.compare_tracking()
         if fig:
             fig.savefig(f"{output_dir}/tracking_comparison.png", dpi=300)
-            print(f"Saved to {output_dir}/tracking_comparison.png")
     except Exception as e:
         print(f"Error generating tracking comparison: {str(e)}")
     
     try:
-        # Visualize results with Kalman filtering and save
-        print("\nVisualization of Kalman filtered tracking results:")
+        # Visualize final tracking results
+        print("\nGenerating tracking visualizations...")
+        # Only generate filtered visualization (more important than raw)
         fig = tracker.visualize(use_filtered=True)
         if fig:
             fig.savefig(f"{output_dir}/filtered_tracking.png", dpi=300)
-            print(f"Saved to {output_dir}/filtered_tracking.png")
     except Exception as e:
-        print(f"Error generating filtered tracking visualization: {str(e)}")
+        print(f"Error generating tracking visualization: {str(e)}")
     
     try:
-        # Visualize results without Kalman filtering (raw data) and save
-        print("\nVisualization of raw tracking results (without Kalman filtering):")
-        fig = tracker.visualize(use_filtered=False)
-        if fig:
-            fig.savefig(f"{output_dir}/raw_tracking.png", dpi=300)
-            print(f"Saved to {output_dir}/raw_tracking.png")
-    except Exception as e:
-        print(f"Error generating raw tracking visualization: {str(e)}")
-    
-    try:
-        # Analyze potential constant shift bug
+        # Analyze any potential constant shift issues
+        print("\nAnalyzing position errors...")
         analyze_constant_shift(tracker, output_dir)
     except Exception as e:
         print(f"Error during constant shift analysis: {str(e)}")
     
-    print(f"\nAll debug images saved to '{output_dir}' directory")
+    # Report total runtime
+    total_time = time.time() - total_start_time
+    print(f"\nDemo completed in {total_time:.2f} seconds")
+    print(f"Debug images saved to '{output_dir}' directory")
 
 
 # For installing required packages:
