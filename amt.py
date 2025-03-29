@@ -28,6 +28,10 @@ except ImportError:
     # Dummy parallel range
     def prange(*args):
         return range(*args)
+        
+# Import for testing framework
+import pandas as pd
+import seaborn as sns
 
 class AcousticTracker:
     """Acoustic multi-target tracking system using home theater setup with pyroomacoustics and Kalman filtering"""
@@ -328,20 +332,27 @@ class AcousticTracker:
             # Store in tracking data
             self.tracking_data[target['id']]['true_positions'].append(new_pos.copy())
     
-    def simulate_echoes(self, block_length=2048):
-        """Simulate acoustic echoes using simplified model
+    def simulate_echoes(self, block_length=2048, noise_snr=None, active_mics=None):
+        """Simulate acoustic echoes using simplified model with optional AWGN
         
         Args:
             block_length (int): Signal block length
+            noise_snr (float, optional): Signal-to-Noise Ratio in dB for AWGN
+            active_mics (list, optional): List of active microphone indices to use
             
         Returns:
             dict: Dictionary mapping (speaker_idx, mic_idx) to received signals
         """
         received_signals = {}
         
+        # Use only specified microphones if provided
+        mic_indices = range(len(self.mics)) if active_mics is None else active_mics
+        
         # For each speaker-mic pair, create direct path signals and reflections
         for s_idx, speaker_pos in enumerate(self.speakers):
-            for m_idx, mic_pos in enumerate(self.mics):
+            for m_idx in mic_indices:
+                mic_pos = self.mics[m_idx]
+                
                 # Direct path
                 direct_delay = self.direct_delays[(s_idx, m_idx)]
                 
@@ -370,6 +381,23 @@ class AcousticTracker:
                     # Add the reflection
                     if delay_samples < buffer_length - len(signal):
                         mic_signal[delay_samples:delay_samples+len(signal)] += attenuation * signal
+                
+                # Add Additive White Gaussian Noise if SNR is specified
+                if noise_snr is not None:
+                    # Calculate signal power
+                    signal_power = np.mean(mic_signal**2)
+                    
+                    # Convert SNR from dB to linear scale
+                    snr_linear = 10**(noise_snr/10)
+                    
+                    # Calculate noise power
+                    noise_power = signal_power / snr_linear
+                    
+                    # Generate AWGN with the appropriate power
+                    noise = np.random.normal(0, np.sqrt(noise_power), size=buffer_length)
+                    
+                    # Add noise to the signal
+                    mic_signal += noise
                 
                 # Store the received signal
                 received_signals[(s_idx, m_idx)] = mic_signal
@@ -1133,12 +1161,14 @@ class AcousticTracker:
         except Exception as e:
             print(f"Warning: Error saving error maps: {str(e)}")
     
-    def run_tracking(self, duration=5.0, steps=50):
+    def run_tracking(self, duration=5.0, steps=50, noise_snr=None, active_mics=None):
         """Run the complete tracking simulation with performance optimizations
         
         Args:
             duration (float): Total simulation duration in seconds
             steps (int): Number of tracking steps
+            noise_snr (float, optional): SNR in dB for AWGN simulation
+            active_mics (list, optional): List of active microphone indices to use
             
         Returns:
             dict: Tracking data
@@ -1169,15 +1199,26 @@ class AcousticTracker:
         self.correlation_history = [None] * steps
         self.ellipses_history = [None] * steps
         
+        # Track SNR and active mics in test status
+        if noise_snr is not None:
+            snr_status = f" (SNR: {noise_snr}dB)"
+        else:
+            snr_status = " (no noise)"
+            
+        if active_mics is not None:
+            mic_status = f" (using {len(active_mics)} mics)"
+        else:
+            mic_status = f" (using all {len(self.mics)} mics)"
+        
         for step in range(steps):
             step_start = time.time()
-            print(f"Processing step {step+1}/{steps}...")
+            print(f"Processing step {step+1}/{steps}{snr_status}{mic_status}...")
             
             # Update target positions
             self.update_targets(dt)
             
-            # Simulate propagation and echoes
-            received_signals = self.simulate_echoes()
+            # Simulate propagation and echoes with specified SNR and active mics
+            received_signals = self.simulate_echoes(noise_snr=noise_snr, active_mics=active_mics)
             
             # Detect echoes
             echo_data = self.detect_echoes(received_signals)
@@ -1220,7 +1261,8 @@ class AcousticTracker:
             self.ellipses_history[step] = ellipses
             
             # Visualize ellipses for debugging (only periodically to save time)
-            if step % 3 == 0 or step == steps - 1:
+            # Skip visualization during test runs to save time
+            if (step % 3 == 0 or step == steps - 1) and noise_snr is None and active_mics is None:
                 self._visualize_ellipses(ellipses, step, output_dir)
             
             # Locate targets with Kalman filtering (pass step number for debugging)
@@ -1232,8 +1274,8 @@ class AcousticTracker:
             step_times.append(step_time)
             print(f"  Step {step+1} completed in {step_time:.3f} seconds")
         
-        # Create animation of ellipses over time (only if needed)
-        if steps > 5:
+        # Create animation of ellipses over time (only if needed and not during test runs)
+        if steps > 5 and noise_snr is None and active_mics is None:
             self._create_ellipses_animation(output_dir)
         
         # Report performance statistics
@@ -2418,6 +2460,278 @@ def analyze_constant_shift(tracker, output_dir):
         else:
             print(f"\n{target['name']}: No valid estimated positions for analysis")
 
+def run_comprehensive_tests():
+    """Run comprehensive tests with varying SNR and microphone combinations"""
+    import time
+    import os
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    
+    # Create test results directory
+    test_output_dir = "amt_test_results"
+    os.makedirs(test_output_dir, exist_ok=True)
+    
+    # Test parameters
+    snr_values = [None, 30, 20, 10, 5, 0]  # None = no noise, then 30dB to 0dB
+    steps_per_test = 15
+    duration = 5.0
+    
+    # Different microphone configurations to test
+    mic_configurations = [
+        {"name": "All Mics", "indices": None},
+        {"name": "Front Mics", "indices": [0, 1, 2]},  # Just soundbar mics
+        {"name": "Ceiling Mic", "indices": [3]},       # Just ceiling mic
+        {"name": "Minimal Set", "indices": [0, 3]},    # One front + ceiling
+    ]
+    
+    # Initialize dataframe to store results
+    results_data = []
+    
+    # Initialize a standard test scenario
+    print("Initializing test scenarios...")
+    
+    # Performance measurement
+    total_start_time = time.time()
+    
+    # Target positions and motions
+    target_configs = [
+        {"position": (2.5, 3.0, 1.7), "velocity": (0.3, 0, 0), "name": "Horizontal Motion"},
+        {"position": (1.5, 4.0, 1.6), "velocity": (0, 0.25, 0), "name": "Forward Motion"},
+        {"position": (2.0, 3.0, 1.0), "velocity": (0, 0, 0.2), "name": "Vertical Motion"},
+    ]
+    
+    # Run different test scenarios
+    for target_config in target_configs:
+        print(f"\n==== Testing {target_config['name']} ====")
+        
+        for mic_config in mic_configurations:
+            print(f"\n-- Testing with {mic_config['name']} --")
+            
+            for snr in snr_values:
+                snr_label = "Clean" if snr is None else f"{snr}dB"
+                print(f"\nRunning test: SNR={snr_label}")
+                
+                # Create fresh tracker for each test
+                tracker = AcousticTracker()
+                
+                # Add the target with specific motion
+                tracker.add_target(
+                    target_config["position"], 
+                    velocity=target_config["velocity"], 
+                    name=target_config["name"]
+                )
+                
+                try:
+                    # Run tracking simulation with current test parameters
+                    test_start = time.time()
+                    
+                    # Forward sim_results to the test-specific run_tracking
+                    sim_results = tracker.run_tracking(
+                        duration=duration, 
+                        steps=steps_per_test,
+                        noise_snr=snr,
+                        active_mics=mic_config["indices"]
+                    )
+                    
+                    test_duration = time.time() - test_start
+                    
+                    # Calculate tracking errors for this test
+                    target = tracker.targets[0]  # We're only testing one target at a time
+                    
+                    # Gather ground truth and filtered positions
+                    true_positions = np.array(target['history'])
+                    filtered_positions = np.array(target['filtered_positions'])
+                    
+                    # Calculate errors by axis
+                    errors = filtered_positions - true_positions
+                    mean_error_x = np.mean(np.abs(errors[:, 0]))
+                    mean_error_y = np.mean(np.abs(errors[:, 1]))
+                    mean_error_z = np.mean(np.abs(errors[:, 2]))
+                    
+                    # Calculate total error
+                    total_errors = np.sqrt(np.sum(errors**2, axis=1))
+                    mean_total_error = np.mean(total_errors)
+                    max_total_error = np.max(total_errors)
+                    
+                    # Check for z-axis jumping behavior
+                    z_jumps = 0
+                    for i in range(1, len(filtered_positions)):
+                        z_diff = np.abs(filtered_positions[i, 2] - filtered_positions[i-1, 2])
+                        if z_diff > 0.2:  # If z changes by more than 20cm between steps
+                            z_jumps += 1
+                    
+                    # Store the results
+                    results_data.append({
+                        "Target": target_config["name"],
+                        "Mic Config": mic_config["name"],
+                        "SNR": snr_label,
+                        "X Error (m)": mean_error_x,
+                        "Y Error (m)": mean_error_y,
+                        "Z Error (m)": mean_error_z,
+                        "Total Error (m)": mean_total_error,
+                        "Max Error (m)": max_total_error,
+                        "Z Jumps": z_jumps,
+                        "Duration (s)": test_duration
+                    })
+                    
+                    # Save trajectory plot for this test
+                    try:
+                        fig = plt.figure(figsize=(12, 8))
+                        ax = fig.add_subplot(111, projection='3d')
+                        
+                        # Plot true trajectory
+                        ax.plot(true_positions[:, 0], true_positions[:, 1], true_positions[:, 2], 
+                                'g-', linewidth=2, label='True')
+                        
+                        # Plot filtered trajectory
+                        ax.plot(filtered_positions[:, 0], filtered_positions[:, 1], filtered_positions[:, 2], 
+                                'r--', linewidth=2, label='Filtered')
+                        
+                        # Add start/end markers
+                        ax.scatter(true_positions[0, 0], true_positions[0, 1], true_positions[0, 2], 
+                                  c='green', marker='o', s=100, label='Start')
+                        ax.scatter(true_positions[-1, 0], true_positions[-1, 1], true_positions[-1, 2], 
+                                  c='green', marker='s', s=100, label='End')
+                        
+                        # Set labels and title
+                        ax.set_xlabel('X (m)')
+                        ax.set_ylabel('Y (m)')
+                        ax.set_zlabel('Z (m)')
+                        ax.set_title(f'Trajectory: {target_config["name"]}, {mic_config["name"]}, SNR={snr_label}')
+                        ax.legend()
+                        
+                        # Save figure
+                        trajectory_filename = f"{test_output_dir}/trajectory_{target_config['name'].replace(' ', '_')}_{mic_config['name'].replace(' ', '_')}_SNR_{snr_label}.png"
+                        fig.savefig(trajectory_filename, dpi=200)
+                        plt.close(fig)
+                        
+                        print(f"  - Saved trajectory plot to {trajectory_filename}")
+                    except Exception as e:
+                        print(f"  - Error saving trajectory plot: {e}")
+                        
+                    # Save error analysis for this test
+                    try:
+                        # Create error over time plots
+                        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+                        
+                        # Plot error by axis
+                        time_steps = np.arange(len(errors))
+                        axes[0, 0].plot(time_steps, errors[:, 0], 'r-', label='X Error')
+                        axes[0, 0].set_title('X-axis Error')
+                        axes[0, 0].set_xlabel('Step')
+                        axes[0, 0].set_ylabel('Error (m)')
+                        axes[0, 0].grid(True, alpha=0.3)
+                        
+                        axes[0, 1].plot(time_steps, errors[:, 1], 'g-', label='Y Error')
+                        axes[0, 1].set_title('Y-axis Error')
+                        axes[0, 1].set_xlabel('Step')
+                        axes[0, 1].set_ylabel('Error (m)')
+                        axes[0, 1].grid(True, alpha=0.3)
+                        
+                        axes[1, 0].plot(time_steps, errors[:, 2], 'b-', label='Z Error')
+                        axes[1, 0].set_title('Z-axis Error')
+                        axes[1, 0].set_xlabel('Step')
+                        axes[1, 0].set_ylabel('Error (m)')
+                        axes[1, 0].grid(True, alpha=0.3)
+                        
+                        # Plot total error
+                        axes[1, 1].plot(time_steps, total_errors, 'k-', label='Total Error')
+                        axes[1, 1].set_title('Total Error')
+                        axes[1, 1].set_xlabel('Step')
+                        axes[1, 1].set_ylabel('Error (m)')
+                        axes[1, 1].grid(True, alpha=0.3)
+                        
+                        # Add overall title
+                        fig.suptitle(f'Error Analysis: {target_config["name"]}, {mic_config["name"]}, SNR={snr_label}')
+                        plt.tight_layout()
+                        plt.subplots_adjust(top=0.9)
+                        
+                        # Save figure
+                        error_filename = f"{test_output_dir}/errors_{target_config['name'].replace(' ', '_')}_{mic_config['name'].replace(' ', '_')}_SNR_{snr_label}.png"
+                        fig.savefig(error_filename, dpi=200)
+                        plt.close(fig)
+                        
+                        print(f"  - Saved error analysis to {error_filename}")
+                    except Exception as e:
+                        print(f"  - Error saving error analysis: {e}")
+                        
+                except Exception as e:
+                    print(f"Error during test: {e}")
+                    import traceback
+                    traceback.print_exc()
+    
+    # Create summary dataframe
+    results_df = pd.DataFrame(results_data)
+    
+    # Save the full results to CSV
+    csv_path = f"{test_output_dir}/test_results.csv"
+    results_df.to_csv(csv_path, index=False)
+    print(f"\nSaved complete results to {csv_path}")
+    
+    # Create summary visualizations
+    try:
+        # 1. SNR vs. Error by Target Type
+        plt.figure(figsize=(12, 8))
+        sns.barplot(x='SNR', y='Total Error (m)', hue='Target', data=results_df)
+        plt.title('Tracking Error vs. SNR by Target Type')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(f"{test_output_dir}/summary_snr_vs_error_by_target.png", dpi=300)
+        plt.close()
+        
+        # 2. Mic Config vs. Error by Target Type
+        plt.figure(figsize=(12, 8))
+        sns.barplot(x='Mic Config', y='Total Error (m)', hue='Target', data=results_df)
+        plt.title('Tracking Error vs. Microphone Configuration by Target Type')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(f"{test_output_dir}/summary_mic_vs_error_by_target.png", dpi=300)
+        plt.close()
+        
+        # 3. SNR vs. Z Error (most important for our tests)
+        plt.figure(figsize=(12, 8))
+        sns.barplot(x='SNR', y='Z Error (m)', hue='Mic Config', data=results_df)
+        plt.title('Z-Axis Error vs. SNR by Microphone Configuration')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(f"{test_output_dir}/summary_snr_vs_z_error.png", dpi=300)
+        plt.close()
+        
+        # 4. Z Jumps analysis
+        plt.figure(figsize=(12, 8))
+        sns.barplot(x='SNR', y='Z Jumps', hue='Mic Config', data=results_df)
+        plt.title('Z-Axis Jump Frequency vs. SNR by Microphone Configuration')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(f"{test_output_dir}/summary_z_jumps.png", dpi=300)
+        plt.close()
+        
+        # 5. Heat map of error by SNR and Mic Config
+        plt.figure(figsize=(14, 10))
+        heatmap_data = results_df.pivot_table(
+            values='Total Error (m)', 
+            index='Mic Config', 
+            columns='SNR'
+        )
+        sns.heatmap(heatmap_data, annot=True, cmap='viridis', fmt='.3f')
+        plt.title('Tracking Error Heatmap: Mic Configuration vs. SNR')
+        plt.tight_layout()
+        plt.savefig(f"{test_output_dir}/summary_error_heatmap.png", dpi=300)
+        plt.close()
+        
+        print(f"\nSaved summary visualizations to {test_output_dir}/")
+    except Exception as e:
+        print(f"Error generating summary visualizations: {e}")
+    
+    # Report total runtime
+    total_time = time.time() - total_start_time
+    print(f"\nAll tests completed in {total_time:.2f} seconds")
+    print(f"Test results saved to '{test_output_dir}' directory")
+    
+    return results_df
+
+
 def run_demo():
     """Run a demonstration of the high-resolution acoustic tracking system with performance optimizations"""
     import time
@@ -2508,7 +2822,11 @@ def run_demo():
 
 
 # For installing required packages:
-# pip install numpy matplotlib scipy pyroomacoustics filterpy
+# pip install numpy matplotlib scipy pyroomacoustics filterpy numba pandas seaborn
 
 if __name__ == "__main__":
-    run_demo()
+    # Default demo
+    #run_demo()
+    
+    # Run comprehensive tests - uncomment to run
+    run_comprehensive_tests()
