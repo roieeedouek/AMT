@@ -8,11 +8,13 @@ import pyroomacoustics as pra
 from mpl_toolkits.mplot3d import Axes3D
 from filterpy.kalman import KalmanFilter
 from scipy.linalg import block_diag
+import time
+import os
 
 class AcousticTracker:
     """Acoustic multi-target tracking system using home theater setup with pyroomacoustics and Kalman filtering"""
     
-    def __init__(self, room_dim=(5.0, 6.0, 2.4), speed_of_sound=343.0):
+    def __init__(self, room_dim=(5.0, 6.0, 2.4), speed_of_sound=343.0, debug_mode=True):
         """Initialize the acoustic tracker
         
         Args:
@@ -23,6 +25,7 @@ class AcousticTracker:
         self.c = speed_of_sound
         self.fs = 48000  # Increased sampling rate for better resolution
         
+        self.debug_mode = debug_mode
         # Set up the room simulation
         self.setup_room()
         
@@ -308,7 +311,7 @@ class AcousticTracker:
             # Store in tracking data
             self.tracking_data[target['id']]['true_positions'].append(new_pos.copy())
     
-    def simulate_echoes(self, block_length=2048):
+    def simulate_echoes(self, block_length=2048, noise_snr=None):
         """Simulate acoustic echoes using simplified model
         
         Args:
@@ -350,6 +353,23 @@ class AcousticTracker:
                     # Add the reflection
                     if delay_samples < buffer_length - len(signal):
                         mic_signal[delay_samples:delay_samples+len(signal)] += attenuation * signal
+                
+                # Add Additive White Gaussian Noise if SNR is specified
+                if noise_snr is not None:
+                    # Calculate signal power
+                    signal_power = np.mean(mic_signal**2)
+                    
+                    # Convert SNR from dB to linear scale
+                    snr_linear = 10**(noise_snr/10)
+                    
+                    # Calculate noise power
+                    noise_power = signal_power / snr_linear
+                    
+                    # Generate AWGN with the appropriate power
+                    noise = np.random.normal(0, np.sqrt(noise_power), size=buffer_length)
+                    
+                    # Add noise to the signal
+                    mic_signal += noise
                 
                 # Store the received signal
                 received_signals[(s_idx, m_idx)] = mic_signal
@@ -745,7 +765,7 @@ class AcousticTracker:
                         print(f"Warning: Error creating error map for z={z_val}: {str(e)}")
                 
                 # Save the error maps
-                self._save_error_maps(error_maps, ellipses, "coarse")
+                # self._save_error_maps(error_maps, ellipses, "coarse")
             except Exception as e:
                 print(f"Warning: Error creating coarse error maps: {str(e)}")
         
@@ -869,7 +889,7 @@ class AcousticTracker:
                         error_map[i, j] = self._compute_error(point, ellipses, prev_point)
                 
                 # Save the fine error map
-                self._save_error_maps({z_actual: error_map}, ellipses, "fine", best_point=best_point)
+                # self._save_error_maps({z_actual: error_map}, ellipses, "fine", best_point=best_point)
             except Exception as e:
                 print(f"Warning: Error creating fine error map: {str(e)}")
         
@@ -1032,7 +1052,7 @@ class AcousticTracker:
         except Exception as e:
             print(f"Warning: Error saving error maps: {str(e)}")
     
-    def run_tracking(self, duration=5.0, steps=50):
+    def run_tracking(self, duration=5.0, steps=50, noise_snr=0):
         """Run the complete tracking simulation
         
         Args:
@@ -1062,8 +1082,8 @@ class AcousticTracker:
             self.update_targets(dt)
             
             # Simulate propagation and echoes
-            received_signals = self.simulate_echoes()
             
+            received_signals = self.simulate_echoes(noise_snr=noise_snr)
             # Detect echoes
             echo_data = self.detect_echoes(received_signals)
             
@@ -1635,8 +1655,6 @@ class AcousticTracker:
         ax.legend(*zip(*unique), loc='upper right')
         
         plt.tight_layout()
-        plt.show()
-        
         return fig
     
     def visualize_correlation(self, step=0):
@@ -1735,7 +1753,8 @@ class AcousticTracker:
         fig.suptitle(f"Step {step}: Correlation and MTI Results")
         plt.tight_layout()
         plt.subplots_adjust(top=0.90)
-        plt.show()
+        fig.savefig(f"correlation/correlation_analysis_{target['movement_data']['type']}{step}.png", dpi=300)
+        plt.close(fig)
         
         return fig
     
@@ -1814,7 +1833,9 @@ class AcousticTracker:
         ax2.legend()
         
         plt.tight_layout()
-        plt.show()
+        filename = f"trackingresults/tracking_comparison_{self.timestamp}.png"
+        fig.savefig(filename, dpi=300)
+        plt.close(fig)
         
         # Calculate and print error metrics
         print("\nTracking Error Metrics:")
@@ -1930,13 +1951,13 @@ class AcousticTracker:
             ax_axis.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        plt.show()
         
         # Save the error plot as a separate file
         import os
         output_dir = "amt_debug_images"
         os.makedirs(output_dir, exist_ok=True)
         fig_error.savefig(f"{output_dir}/tracking_errors.png", dpi=300)
+        plt.close(fig_error)
         
         return fig
 
@@ -2153,6 +2174,1568 @@ class AcousticTracker:
         
         return anim
 
+    def _generate_test_summary_plots(self, results, output_dir):
+        """
+        Generate summary plots for all tests
+        
+        Args:
+            results (dict): All test results
+            output_dir (str): Output directory for plots
+        """
+        # 1. Microphone configuration comparison
+        try:
+            self._plot_mic_config_comparison(results['mic_configs'], output_dir)
+        except Exception as e:
+            print(f"Error generating mic config plots: {str(e)}")
+        
+        # 2. SNR level comparison
+        try:
+            self._plot_snr_comparison(results['snr_tests'], output_dir)
+        except Exception as e:
+            print(f"Error generating SNR plots: {str(e)}")
+        
+        # 3. Movement pattern comparison
+        try:
+            self._plot_movement_comparison(results['movement_tests'], output_dir)
+        except Exception as e:
+            print(f"Error generating movement plots: {str(e)}")
+
+    def _plot_mic_config_comparison(self, mic_results, output_dir):
+        """Plot comparison of microphone configurations"""
+        if not mic_results:
+            return
+        
+        # Extract data for plotting
+        configs = []
+        mean_errors = []
+        axis_errors = []
+        valid_percentages = []
+        
+        for config_name, result in mic_results.items():
+            if result['is_valid'] and result['targets'] > 0:
+                configs.append(config_name)
+                
+                # Get metrics for first target
+                metrics = result['error_metrics'][0]
+                
+                mean_errors.append(metrics['filtered_mean_error'])
+                axis_errors.append(metrics['filtered_axis_mean'])
+                valid_percentages.append(metrics['valid_percentage'])
+        
+        if not configs:
+            return
+        
+        # Convert to numpy arrays
+        axis_errors = np.array(axis_errors)
+        
+        # Create plot
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+        
+        # Plot overall mean error
+        bar_width = 0.8
+        x = np.arange(len(configs))
+        
+        ax1.bar(x, mean_errors, width=bar_width, color='steelblue')
+        ax1.set_xlabel('Microphone Configuration')
+        ax1.set_ylabel('Mean Error (m)')
+        ax1.set_title('Tracking Error by Microphone Configuration')
+        ax1.set_xticks(x)
+        ax1.set_xticklabels(configs, rotation=45, ha='right')
+        ax1.grid(axis='y', alpha=0.3)
+        
+        # Add valid measurement percentage as text on bars
+        for i, v in enumerate(mean_errors):
+            ax1.text(i, v + 0.01, f"{valid_percentages[i]:.1f}%", 
+                    ha='center', va='bottom', fontsize=9)
+        
+        # Plot per-axis errors
+        x = np.arange(len(configs))
+        bar_width = 0.25
+        
+        ax2.bar(x - bar_width, axis_errors[:, 0], width=bar_width, color='red', label='X Error')
+        ax2.bar(x, axis_errors[:, 1], width=bar_width, color='green', label='Y Error')
+        ax2.bar(x + bar_width, axis_errors[:, 2], width=bar_width, color='blue', label='Z Error')
+        
+        ax2.set_xlabel('Microphone Configuration')
+        ax2.set_ylabel('Mean Error (m)')
+        ax2.set_title('Per-Axis Error by Microphone Configuration')
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(configs, rotation=45, ha='right')
+        ax2.legend()
+        ax2.grid(axis='y', alpha=0.3)
+        
+        # Add title and adjust layout
+        fig.suptitle('Microphone Configuration Performance Comparison', fontsize=16)
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.9)
+        
+        # Save figure
+        filename = f"{output_dir}/mic_config_comparison.png"
+        fig.savefig(filename, dpi=300)
+        plt.close(fig)
+
+    def analyze_position_shift(self, num_steps=20):
+        """Analyze whether there is a constant position shift in the tracking
+        
+        Args:
+            num_steps (int): Number of tracking steps to analyze
+            
+        Returns:
+            dict: Diagnostics including shift vectors and correction matrices
+        """
+        # Run a short tracking simulation if not already done
+        if not self.tracking_data or not self.targets:
+            print("No tracking data available. Running simulation...")
+            self.run_tracking(duration=2.0, steps=num_steps)
+        
+        # Initialize diagnostic results
+        diagnostics = {
+            'per_target': {},
+            'global': {
+                'position_shifts': [],
+                'has_consistent_shift': False,
+                'correction_vector': None,
+                'correction_matrix': None
+            }
+        }
+        
+        # Collect error data for each target
+        for target in self.targets:
+            target_id = target['id']
+            
+            # Get actual and estimated positions
+            true_positions = np.array(target['history'])
+            
+            # For raw estimates, filter out None values
+            est_pos_with_idx = [(i, pos) for i, pos in enumerate(target['estimated_positions']) if pos is not None]
+            if est_pos_with_idx:
+                indices, est_positions = zip(*est_pos_with_idx)
+                est_positions = np.array(est_positions)
+                indices = np.array(indices)
+                
+                # Calculate errors
+                errors = est_positions - true_positions[indices]
+                
+                # Calculate statistics
+                mean_error = np.mean(errors, axis=0)
+                std_error = np.std(errors, axis=0)
+                median_error = np.median(errors, axis=0)
+                
+                # Check if the error is consistent (low standard deviation)
+                error_consistency = np.all(std_error < 0.05)  # 5cm threshold
+                
+                # Check if there's a significant shift (mean error > 10cm)
+                significant_shift = np.linalg.norm(mean_error) > 0.1
+                
+                # Store results for this target
+                target_diagnostics = {
+                    'error_vectors': errors,
+                    'mean_error': mean_error,
+                    'median_error': median_error, 
+                    'std_error': std_error,
+                    'error_consistency': error_consistency,
+                    'significant_shift': significant_shift,
+                    'num_valid_estimates': len(est_positions),
+                    'correction_vector': -mean_error if error_consistency else None
+                }
+                
+                diagnostics['per_target'][target_id] = target_diagnostics
+                
+                # Add to global results
+                if error_consistency:
+                    diagnostics['global']['position_shifts'].append(mean_error)
+        
+        # Analyze global shifts if we have data from multiple targets
+        if len(diagnostics['global']['position_shifts']) > 0:
+            # Calculate average shift across targets
+            global_shift = np.mean(diagnostics['global']['position_shifts'], axis=0)
+            
+            # Check if shift is consistent across targets
+            shifts = np.array(diagnostics['global']['position_shifts'])
+            shift_std = np.std(shifts, axis=0)
+            global_consistency = np.all(shift_std < 0.05)  # 5cm threshold
+            
+            diagnostics['global']['has_consistent_shift'] = global_consistency
+            
+            if global_consistency:
+                # We've detected a consistent position shift!
+                diagnostics['global']['correction_vector'] = -global_shift
+                
+                # Generate a correction matrix (for more complex transformations)
+                # For now, just a simple translation
+                correction_matrix = np.eye(4)  # 4x4 homogeneous transformation
+                correction_matrix[:3, 3] = -global_shift
+                diagnostics['global']['correction_matrix'] = correction_matrix
+                
+                print("\n==== POSITION SHIFT DETECTED ====")
+                print(f"Detected a consistent position shift across targets:")
+                print(f"  X shift: {global_shift[0]:.3f} m")
+                print(f"  Y shift: {global_shift[1]:.3f} m")
+                print(f"  Z shift: {global_shift[2]:.3f} m")
+                print(f"Correction vector: {-global_shift}")
+                print("===================================\n")
+                
+                # Create visualization of the position shift
+                self._visualize_position_shift(diagnostics)
+        
+        # Store diagnostics for later reference
+        self.position_shift_diagnostics = diagnostics
+        
+        return diagnostics
+    
+    def _visualize_position_shift(self, diagnostics):
+        """
+        Visualize the position shift for better understanding
+        
+        Args:
+            diagnostics (dict): Position shift diagnostics
+        """
+        # Create a dedicated directory for position shift analysis
+        output_dir = "amt_debug_images/position_shift"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # 1. Create a 3D visualization of error vectors
+        fig = plt.figure(figsize=(12, 10))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Set limits based on room dimensions
+        ax.set_xlim(0, self.room_dim[0])
+        ax.set_ylim(0, self.room_dim[1])
+        ax.set_zlim(0, self.room_dim[2])
+        
+        # Set labels
+        ax.set_xlabel('X (m)')
+        ax.set_ylabel('Y (m)')
+        ax.set_zlabel('Z (m)')
+        ax.set_title('Position Shift Analysis')
+        
+        # Draw room boundaries
+        for x in [0, self.room_dim[0]]:
+            for y in [0, self.room_dim[1]]:
+                ax.plot([x, x], [y, y], [0, self.room_dim[2]], 'k-', alpha=0.3)
+        for x in [0, self.room_dim[0]]:
+            for z in [0, self.room_dim[2]]:
+                ax.plot([x, x], [0, self.room_dim[1]], [z, z], 'k-', alpha=0.3)
+        for y in [0, self.room_dim[1]]:
+            for z in [0, self.room_dim[2]]:
+                ax.plot([0, self.room_dim[0]], [y, y], [z, z], 'k-', alpha=0.3)
+        
+        # Draw speakers and microphones
+        for i, pos in enumerate(self.speakers):
+            ax.scatter(pos[0], pos[1], pos[2], color='red', marker='o', s=50, label=f'Speaker {i+1}' if i == 0 else None)
+        for i, pos in enumerate(self.mics):
+            ax.scatter(pos[0], pos[1], pos[2], color='blue', marker='^', s=50, label=f'Mic {i+1}' if i == 0 else None)
+        
+        # Draw position shift vectors for each target
+        colors = ['g', 'purple', 'orange', 'cyan', 'magenta']
+        
+        for target_id, target_diag in diagnostics['per_target'].items():
+            if target_id < len(self.targets):
+                target = self.targets[target_id]
+                color = colors[target_id % len(colors)]
+                
+                # Only plot if we have a correction vector
+                if target_diag['correction_vector'] is not None:
+                    # Get a representative position
+                    pos = target['position']
+                    
+                    # Draw position and error vector
+                    ax.scatter(pos[0], pos[1], pos[2], color=color, marker='s', s=80, 
+                            label=f'{target["name"]} Position')
+                    
+                    # Draw error vector (scaled for visibility)
+                    error_vector = target_diag['mean_error']
+                    ax.quiver(pos[0], pos[1], pos[2], 
+                            error_vector[0], error_vector[1], error_vector[2], 
+                            color=color, length=1.0, normalize=True,
+                            label=f'{target["name"]} Error')
+        
+        # Draw global shift if available
+        if diagnostics['global']['has_consistent_shift']:
+            # Use room center as reference point
+            room_center = np.array([
+                self.room_dim[0]/2, 
+                self.room_dim[1]/2, 
+                self.room_dim[2]/2
+            ])
+            
+            # Draw global shift vector
+            global_shift = diagnostics['global']['position_shifts'][0]  # Use first shift for visualization
+            ax.quiver(room_center[0], room_center[1], room_center[2],
+                    global_shift[0], global_shift[1], global_shift[2],
+                    color='red', length=1.0, linewidth=3, normalize=True,
+                    label='Global Shift')
+        
+        # Add legend
+        ax.legend()
+        
+        # Save figure
+        filename = f"{output_dir}/position_shift_3d.png"
+        fig.savefig(filename, dpi=300)
+        plt.close(fig)
+        
+        # 2. Create a multi-panel figure showing error distribution per axis
+        fig, axes = plt.subplots(3, 1, figsize=(12, 15))
+        
+        # Collect all error vectors
+        all_errors = []
+        for target_diag in diagnostics['per_target'].values():
+            if 'error_vectors' in target_diag:
+                all_errors.extend(target_diag['error_vectors'])
+        
+        if all_errors:
+            all_errors = np.array(all_errors)
+            
+            # Plot X errors
+            axes[0].hist(all_errors[:, 0], bins=20, color='red', alpha=0.7)
+            axes[0].set_title('X-axis Position Error Distribution')
+            axes[0].set_xlabel('Error (m)')
+            axes[0].set_ylabel('Count')
+            axes[0].axvline(x=0, color='k', linestyle='--')
+            if diagnostics['global']['has_consistent_shift']:
+                axes[0].axvline(x=diagnostics['global']['correction_vector'][0], 
+                            color='red', linestyle='-', linewidth=2,
+                            label=f'Correction: {diagnostics["global"]["correction_vector"][0]:.3f}m')
+                axes[0].legend()
+            
+            # Plot Y errors
+            axes[1].hist(all_errors[:, 1], bins=20, color='green', alpha=0.7)
+            axes[1].set_title('Y-axis Position Error Distribution')
+            axes[1].set_xlabel('Error (m)')
+            axes[1].set_ylabel('Count')
+            axes[1].axvline(x=0, color='k', linestyle='--')
+            if diagnostics['global']['has_consistent_shift']:
+                axes[1].axvline(x=diagnostics['global']['correction_vector'][1], 
+                            color='green', linestyle='-', linewidth=2,
+                            label=f'Correction: {diagnostics["global"]["correction_vector"][1]:.3f}m')
+                axes[1].legend()
+            
+            # Plot Z errors
+            axes[2].hist(all_errors[:, 2], bins=20, color='blue', alpha=0.7)
+            axes[2].set_title('Z-axis Position Error Distribution')
+            axes[2].set_xlabel('Error (m)')
+            axes[2].set_ylabel('Count')
+            axes[2].axvline(x=0, color='k', linestyle='--')
+            if diagnostics['global']['has_consistent_shift']:
+                axes[2].axvline(x=diagnostics['global']['correction_vector'][2], 
+                            color='blue', linestyle='-', linewidth=2,
+                            label=f'Correction: {diagnostics["global"]["correction_vector"][2]:.3f}m')
+                axes[2].legend()
+        
+        # Add summary text
+        if diagnostics['global']['has_consistent_shift']:
+            corr = diagnostics['global']['correction_vector']
+            summary_text = (
+                f"Position Shift Analysis\n"
+                f"----------------------\n"
+                f"Detected a consistent position shift:\n"
+                f"  X shift: {-corr[0]:.3f} m\n"
+                f"  Y shift: {-corr[1]:.3f} m\n"
+                f"  Z shift: {-corr[2]:.3f} m\n"
+                f"Applied correction: {corr}"
+            )
+            fig.text(0.1, 0.01, summary_text, fontsize=12, family='monospace', 
+                bbox=dict(facecolor='white', alpha=0.5))
+        
+        # Save figure
+        plt.tight_layout()
+        plt.subplots_adjust(bottom=0.15)
+        filename = f"{output_dir}/position_shift_distributions.png"
+        fig.savefig(filename, dpi=300)
+        plt.close(fig)
+
+    def _update_direct_delays(self):
+        """Update direct path delays when microphone configuration changes"""
+        self.direct_delays = {}
+        for s_idx, speaker_pos in enumerate(self.speakers):
+            for m_idx, mic_pos in enumerate(self.mics):
+                direct_dist = np.linalg.norm(mic_pos - speaker_pos)
+                direct_delay_samples = int(direct_dist / self.c * self.fs)
+                self.direct_delays[(s_idx, m_idx)] = direct_delay_samples
+
+    def _clear_targets(self):
+        """Clear all existing targets"""
+        self.targets = []
+        self.tracking_data = {}
+        self.kalman_filters = {}
+
+    def _setup_linear_movement(self, starting_pos, velocity):
+        """Setup a target with linear movement"""
+        self.add_target(
+            position=starting_pos,
+            velocity=velocity,
+            name="LinearTarget"
+        )
+
+    def _setup_circular_movement(self):
+        """Setup a target with circular movement in XY plane"""
+        center = np.array([2.5, 3.0, 1.2])
+        radius = 1.0
+        angular_velocity = 0.5  # radians per second
+        
+        # Add target at starting position
+        target = self.add_target(
+            position=[center[0] + radius, center[1], center[2]],
+            velocity=[0, radius * angular_velocity, 0],
+            name="CircularTarget"
+        )
+        
+        # Store additional data for updating movement
+        target['movement_data'] = {
+            'type': 'circular',
+            'center': center,
+            'radius': radius,
+            'angular_velocity': angular_velocity,
+            'angle': 0.0
+        }
+        
+        # Override the standard update_targets method for this test
+        self._original_update_targets = self.update_targets
+        
+        def circular_update(dt):
+            for target in self.targets:
+                if 'movement_data' in target and target['movement_data']['type'] == 'circular':
+                    data = target['movement_data']
+                    
+                    # Update angle
+                    data['angle'] += data['angular_velocity'] * dt
+                    
+                    # Calculate new position
+                    new_x = data['center'][0] + data['radius'] * np.cos(data['angle'])
+                    new_y = data['center'][1] + data['radius'] * np.sin(data['angle'])
+                    
+                    # Update position
+                    target['position'] = np.array([new_x, new_y, data['center'][2]])
+                    
+                    # Update velocity (tangential)
+                    vx = -data['radius'] * data['angular_velocity'] * np.sin(data['angle'])
+                    vy = data['radius'] * data['angular_velocity'] * np.cos(data['angle'])
+                    target['velocity'] = np.array([vx, vy, 0])
+                    
+                    # Update history and tracking data
+                    target['history'].append(target['position'].copy())
+                    self.tracking_data[target['id']]['true_positions'].append(target['position'].copy())
+        
+        # Replace update method
+        self.update_targets = circular_update
+
+    def _setup_zigzag_3d_movement(self):
+        """Setup a target with zigzag movement in 3D space"""
+        # Add target at starting position
+        target = self.add_target(
+            position=[1.0, 1.0, 1.0],
+            velocity=[0.3, 0.2, 0.1],
+            name="ZigzagTarget"
+        )
+        
+        # Store additional data for updating movement
+        target['movement_data'] = {
+            'type': 'zigzag',
+            'waypoints': [
+                [1.0, 1.0, 1.0],
+                [4.0, 1.0, 1.0],
+                [4.0, 4.0, 1.5],
+                [1.0, 4.0, 1.5],
+                [1.0, 1.0, 0.5],
+                [4.0, 1.0, 0.5]
+            ],
+            'current_waypoint': 1,
+            'speed': 0.5  # meters per second
+        }
+        
+        # Override the standard update_targets method for this test
+        self._original_update_targets = self.update_targets
+        
+        def zigzag_update(dt):
+            for target in self.targets:
+                if 'movement_data' in target and target['movement_data']['type'] == 'zigzag':
+                    data = target['movement_data']
+                    
+                    # Get current and next waypoint
+                    current_pos = target['position']
+                    next_pos = np.array(data['waypoints'][data['current_waypoint']])
+                    
+                    # Calculate direction and distance
+                    direction = next_pos - current_pos
+                    distance = np.linalg.norm(direction)
+                    
+                    if distance < 0.1:  # Close enough to waypoint
+                        # Move to next waypoint
+                        data['current_waypoint'] = (data['current_waypoint'] + 1) % len(data['waypoints'])
+                        next_pos = np.array(data['waypoints'][data['current_waypoint']])
+                        direction = next_pos - current_pos
+                        distance = np.linalg.norm(direction)
+                    
+                    # Normalize direction
+                    if distance > 0:
+                        direction = direction / distance
+                    
+                    # Calculate movement for this step
+                    step_distance = min(data['speed'] * dt, distance)
+                    step = direction * step_distance
+                    
+                    # Update position
+                    target['position'] = current_pos + step
+                    
+                    # Update velocity
+                    target['velocity'] = direction * data['speed']
+                    
+                    # Update history and tracking data
+                    target['history'].append(target['position'].copy())
+                    self.tracking_data[target['id']]['true_positions'].append(target['position'].copy())
+        
+        # Replace update method
+        self.update_targets = zigzag_update
+
+    def _run_single_test(self, steps=20, duration=4.0, noise_snr=None, test_name="test"):
+        """
+        Run a single test and gather performance metrics
+        
+        Args:
+            steps (int): Number of tracking steps
+            duration (float): Test duration in seconds
+            noise_snr (float): Signal-to-noise ratio in dB (None for no noise)
+            test_name (str): Name for this test
+            
+        Returns:
+            dict: Test results and metrics
+        """
+        print(f"  Running test: {test_name}")
+        
+        # Initialize results
+        results = {
+            'test_name': test_name,
+            'mics': [m.tolist() for m in self.mics],
+            'steps': steps,
+            'duration': duration,
+            'noise_snr': noise_snr,
+            'targets': len(self.targets),
+            'error_metrics': {},
+            'computation_time': None,
+            'is_valid': True
+        }
+        
+        try:
+            # Run tracking
+            start_time = time.time()
+            self.run_tracking(duration=duration, steps=steps, noise_snr=noise_snr)
+            end_time = time.time()
+            
+            # Calculate computation time
+            computation_time = end_time - start_time
+            results['computation_time'] = computation_time
+            
+            # Calculate error metrics for each target
+            for target in self.targets:
+                target_id = target['id']
+                
+                # Get ground truth positions
+                true_positions = np.array(target['history'])
+                
+                # Get estimated positions (filtered)
+                filtered_positions = np.array(target['filtered_positions'])
+                
+                # Get raw estimated positions (may contain None values)
+                valid_estimates = []
+                valid_indices = []
+                for i, pos in enumerate(target['estimated_positions']):
+                    if pos is not None:
+                        valid_estimates.append(pos)
+                        valid_indices.append(i)
+                
+                # Calculate metrics
+                if len(valid_estimates) > 0:
+                    valid_estimates = np.array(valid_estimates)
+                    valid_true = np.array([true_positions[i] for i in valid_indices])
+                    
+                    # Raw estimation error
+                    raw_errors = np.linalg.norm(valid_estimates - valid_true, axis=1)
+                    raw_mean_error = np.mean(raw_errors)
+                    raw_median_error = np.median(raw_errors)
+                    raw_max_error = np.max(raw_errors)
+                    
+                    # Per-axis errors
+                    raw_axis_errors = valid_estimates - valid_true
+                    raw_axis_mean = np.mean(np.abs(raw_axis_errors), axis=0)
+                    
+                    # Percentage of valid measurements
+                    valid_percentage = len(valid_estimates) / len(true_positions) * 100
+                else:
+                    raw_mean_error = None
+                    raw_median_error = None
+                    raw_max_error = None
+                    raw_axis_mean = [None, None, None]
+                    valid_percentage = 0
+                
+                # Filtered position error (always available)
+                filtered_errors = np.linalg.norm(filtered_positions - true_positions, axis=1)
+                filtered_mean_error = np.mean(filtered_errors)
+                filtered_median_error = np.median(filtered_errors)
+                filtered_max_error = np.max(filtered_errors)
+                
+                # Per-axis errors
+                filtered_axis_errors = filtered_positions - true_positions
+                filtered_axis_mean = np.mean(np.abs(filtered_axis_errors), axis=0)
+                
+                # Store metrics
+                results['error_metrics'][target_id] = {
+                    'raw_mean_error': raw_mean_error,
+                    'raw_median_error': raw_median_error,
+                    'raw_max_error': raw_max_error,
+                    'raw_axis_mean': raw_axis_mean.tolist() if hasattr(raw_axis_mean, 'tolist') else raw_axis_mean,
+                    'filtered_mean_error': filtered_mean_error,
+                    'filtered_median_error': filtered_median_error,
+                    'filtered_max_error': filtered_max_error,
+                    'filtered_axis_mean': filtered_axis_mean.tolist(),
+                    'valid_percentage': valid_percentage
+                }
+            
+            # Print summary
+            print(f"  Completed in {computation_time:.2f} seconds")
+            
+            if self.targets and 0 in results['error_metrics']:
+                metrics = results['error_metrics'][0]  # First target
+                print(f"  First target metrics:")
+                print(f"    Filtered mean error: {metrics['filtered_mean_error']:.3f} m")
+                print(f"    Raw measurements available: {metrics['valid_percentage']:.1f}%")
+            
+            # Save visualization
+            filename = f"amt_test_results/{test_name}_visualization.png"
+            fig = self.visualize()
+            fig.savefig(filename, dpi=300)
+            plt.close(fig)
+            
+        except Exception as e:
+            print(f"  Error during test: {str(e)}")
+            results['is_valid'] = False
+            results['error'] = str(e)
+        
+        # Restore original update method if it was replaced
+        if hasattr(self, '_original_update_targets'):
+            self.update_targets = self._original_update_targets
+            delattr(self, '_original_update_targets')
+        
+        return results
+    
+    def _plot_snr_comparison(self, snr_results, output_dir):
+        """Plot comparison of SNR levels"""
+        if not snr_results:
+            return
+        
+        # Extract data for plotting
+        snr_levels = []
+        mean_errors = []
+        valid_percentages = []
+        
+        for snr_name, result in snr_results.items():
+            if result['is_valid'] and result['targets'] > 0:
+                snr_levels.append(snr_name)
+                
+                # Get metrics for first target
+                metrics = result['error_metrics'][0]
+                
+                mean_errors.append(metrics['filtered_mean_error'])
+                valid_percentages.append(metrics['valid_percentage'])
+        
+        if not snr_levels:
+            return
+        
+        # Create plot
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        # Plot mean error vs SNR
+        bar_width = 0.8
+        x = np.arange(len(snr_levels))
+        
+        # Main bars for error
+        bars = ax.bar(x, mean_errors, width=bar_width, color='steelblue')
+        
+        # Add percentage text on bars
+        for i, bar in enumerate(bars):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                f"{valid_percentages[i]:.1f}%", ha='center', va='bottom', fontsize=9)
+        
+        # Set labels and title
+        ax.set_xlabel('Signal-to-Noise Ratio')
+        ax.set_ylabel('Mean Error (m)')
+        ax.set_title('Tracking Error vs. SNR Level')
+        ax.set_xticks(x)
+        ax.set_xticklabels(snr_levels)
+        ax.grid(axis='y', alpha=0.3)
+        
+        # Add second y-axis for valid percentage
+        ax2 = ax.twinx()
+        ax2.plot(x, valid_percentages, 'ro-', linewidth=2)
+        ax2.set_ylabel('Valid Measurements (%)', color='r')
+        ax2.tick_params(axis='y', labelcolor='r')
+        ax2.set_ylim(0, 105)
+        
+        # Adjust layout
+        plt.tight_layout()
+        
+        # Save figure
+        filename = f"{output_dir}/snr_comparison.png"
+        fig.savefig(filename, dpi=300)
+        plt.close(fig)
+
+    def _plot_movement_comparison(self, movement_results, output_dir):
+        """Plot comparison of movement patterns"""
+        if not movement_results:
+            return
+        
+        # Extract data for plotting
+        patterns = []
+        mean_errors = []
+        axis_errors = []
+        valid_percentages = []
+        
+        for pattern_name, result in movement_results.items():
+            if result['is_valid'] and result['targets'] > 0:
+                patterns.append(pattern_name)
+                
+                # Get metrics for first target
+                metrics = result['error_metrics'][0]
+                
+                mean_errors.append(metrics['filtered_mean_error'])
+                axis_errors.append(metrics['filtered_axis_mean'])
+                valid_percentages.append(metrics['valid_percentage'])
+        
+        if not patterns:
+            return
+        
+        # Convert to numpy arrays
+        axis_errors = np.array(axis_errors)
+        
+        # Create plot
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+        
+        # Plot overall mean error
+        bar_width = 0.8
+        x = np.arange(len(patterns))
+        
+        ax1.bar(x, mean_errors, width=bar_width, color='steelblue')
+        ax1.set_xlabel('Movement Pattern')
+        ax1.set_ylabel('Mean Error (m)')
+        ax1.set_title('Tracking Error by Movement Pattern')
+        ax1.set_xticks(x)
+        ax1.set_xticklabels(patterns, rotation=45, ha='right')
+        ax1.grid(axis='y', alpha=0.3)
+        
+        # Add valid measurement percentage as text on bars
+        for i, v in enumerate(mean_errors):
+            ax1.text(i, v + 0.01, f"{valid_percentages[i]:.1f}%", 
+                    ha='center', va='bottom', fontsize=9)
+        
+        # Plot per-axis errors
+        x = np.arange(len(patterns))
+        bar_width = 0.25
+        
+        ax2.bar(x - bar_width, axis_errors[:, 0], width=bar_width, color='red', label='X Error')
+        ax2.bar(x, axis_errors[:, 1], width=bar_width, color='green', label='Y Error')
+        ax2.bar(x + bar_width, axis_errors[:, 2], width=bar_width, color='blue', label='Z Error')
+        
+        ax2.set_xlabel('Movement Pattern')
+        ax2.set_ylabel('Mean Error (m)')
+        ax2.set_title('Per-Axis Error by Movement Pattern')
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(patterns, rotation=45, ha='right')
+        ax2.legend()
+        ax2.grid(axis='y', alpha=0.3)
+        
+        # Add title and adjust layout
+        fig.suptitle('Movement Pattern Performance Comparison', fontsize=16)
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.9)
+        
+        # Save figure
+        filename = f"{output_dir}/movement_comparison.png"
+        fig.savefig(filename, dpi=300)
+        plt.close(fig)
+
+    def run_comprehensive_tests(self):
+        """
+        Run comprehensive tests of the AMT3D system with different configurations
+        
+        Tests various microphone configurations, SNR levels, and movement patterns
+        to evaluate system performance and robustness.
+        
+        Returns:
+            dict: Test results organized by configuration and scenario
+        """
+        # Create output directory for test results
+        output_dir = "amt_test_results"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Store all test results
+        all_results = {
+            'mic_configs': {},
+            'snr_tests': {},
+            'movement_tests': {}
+        }
+        
+        print("\n===== RUNNING COMPREHENSIVE TESTS =====\n")
+        
+        # Define the test configurations
+        mic_configs = {
+            "soundbar_2mic": {
+                "description": "Soundbar with 2 mics in a row (horizontal plane)",
+                "positions": [
+                    [2.0, 0.3, 1.0],  # Left mic
+                    [3.0, 0.3, 1.0]   # Right mic
+                ]
+            },
+            "soundbar_3mic": {
+                "description": "Soundbar with 3 mics in a row (horizontal plane)",
+                "positions": [
+                    [1.5, 0.3, 1.0],  # Left mic
+                    [2.5, 0.3, 1.0],  # Center mic
+                    [3.5, 0.3, 1.0]   # Right mic
+                ]
+            },
+            "tv_plus": {
+                "description": "55-inch TV with 4 mics in + configuration (frontal plane)",
+                "positions": [
+                    [2.5, 0.3, 1.0],  # Center mic
+                    [1.5, 0.3, 1.0],  # Left mic
+                    [3.5, 0.3, 1.0],  # Right mic
+                    [2.5, 0.3, 1.5]   # Top mic
+                ]
+            },
+            "tv_x": {
+                "description": "55-inch TV with 4 mics in X configuration (frontal plane)",
+                "positions": [
+                    [1.5, 0.3, 0.7],  # Bottom-left mic
+                    [3.5, 0.3, 0.7],  # Bottom-right mic
+                    [1.5, 0.3, 1.3],  # Top-left mic
+                    [3.5, 0.3, 1.3]   # Top-right mic
+                ]
+            },
+            "boxy_soundbar_3mic": {
+                "description": "Boxy soundbar with 3 mics (horizontal plane, not in a row)",
+                "positions": [
+                    [1.5, 0.3, 1.0],    # Left mic
+                    [3.5, 0.3, 1.0],    # Right mic
+                    [2.5, 0.7, 1.0]     # Back-center mic
+                ]
+            },
+            "boxy_soundbar_4mic": {
+                "description": "Boxy soundbar with 4 mics (horizontal plane, not in a row)",
+                "positions": [
+                    [1.5, 0.3, 1.0],    # Front-left mic
+                    [3.5, 0.3, 1.0],    # Front-right mic
+                    [1.8, 0.7, 1.0],    # Back-left mic
+                    [3.2, 0.7, 1.0]     # Back-right mic
+                ]
+            }
+        }
+        
+        # Define SNR levels to test
+        snr_levels = [None, 20, 10, 5, 0]  # None means no noise
+        
+        # Define movement patterns to test
+        movement_patterns = {
+            "linear_x": {
+                "description": "Linear movement along X axis",
+                "starting_pos": [1.0, 3.0, 1.2],
+                "velocity": [0.3, 0.0, 0.0]
+            },
+            "linear_y": {
+                "description": "Linear movement along Y axis",
+                "starting_pos": [2.5, 1.0, 1.2],
+                "velocity": [0.0, 0.3, 0.0]
+            },
+            "circular": {
+                "description": "Circular movement in XY plane",
+                "setup": self._setup_circular_movement
+            },
+            "zigzag_3d": {
+                "description": "Zigzag movement in 3D space",
+                "setup": self._setup_zigzag_3d_movement
+            }
+        }
+        
+        # Start time measurement for full test suite
+        test_start_time = time.time()
+        
+        # 1. Test with different microphone configurations
+        print("\n1. TESTING MICROPHONE CONFIGURATIONS")
+        print("------------------------------------")
+        
+        original_mics = self.mics.copy()  # Save original mic configuration
+        
+        for config_name, config in mic_configs.items():
+            print(f"\nTesting {config_name}: {config['description']}")
+            
+            # Update microphone positions
+            self.mics = [np.array(pos) for pos in config['positions']]
+            
+            # Update mic array in the room
+            self.mic_array = np.array(self.mics).T
+            self.room.mic_array.R = self.mic_array
+            
+            # Recalculate direct path delays
+            self._update_direct_delays()
+            
+            # Run a simple test
+            self._clear_targets()
+            self._setup_linear_movement([2.5, 2.0, 1.2], [0.0, 0.4, 0.0])
+            results = self._run_single_test(
+                steps=20, 
+                duration=4.0, 
+                noise_snr=None, 
+                test_name=f"mic_config_{config_name}"
+            )
+            
+            # Store results
+            all_results['mic_configs'][config_name] = results
+        
+        # Restore original mic configuration
+        self.mics = original_mics
+        self.mic_array = np.array(self.mics).T
+        self.room.mic_array.R = self.mic_array
+        self._update_direct_delays()
+        
+        # 2. Test with different SNR levels
+        print("\n2. TESTING SNR LEVELS")
+        print("--------------------")
+        
+        # Use the TV_X configuration as it should be most robust
+        self.mics = [np.array(pos) for pos in mic_configs["tv_x"]["positions"]]
+        self.mic_array = np.array(self.mics).T
+        self.room.mic_array.R = self.mic_array
+        self._update_direct_delays()
+        
+        for snr in snr_levels:
+            snr_name = f"SNR_{snr}dB" if snr is not None else "No_Noise"
+            print(f"\nTesting {snr_name}")
+            
+            # Run a simple test
+            self._clear_targets()
+            self._setup_linear_movement([2.5, 2.0, 1.2], [0.0, 0.4, 0.0])
+            results = self._run_single_test(
+                steps=20, 
+                duration=4.0, 
+                noise_snr=snr, 
+                test_name=f"snr_{snr_name}"
+            )
+            
+            # Store results
+            all_results['snr_tests'][snr_name] = results
+        
+        # 3. Test with different movement patterns
+        print("\n3. TESTING MOVEMENT PATTERNS")
+        print("--------------------------")
+        
+        # Use the best configuration based on previous tests
+        for pattern_name, pattern in movement_patterns.items():
+            print(f"\nTesting {pattern_name}: {pattern['description']}")
+            
+            # Set up movement
+            self._clear_targets()
+            if "setup" in pattern:
+                pattern["setup"]()
+            else:
+                self._setup_linear_movement(pattern["starting_pos"], pattern["velocity"])
+            
+            # Run a test with moderate noise
+            results = self._run_single_test(
+                steps=30, 
+                duration=6.0, 
+                noise_snr=10, 
+                test_name=f"movement_{pattern_name}"
+            )
+            
+            # Store results
+            all_results['movement_tests'][pattern_name] = results
+        
+        # Restore original mic configuration
+        self.mics = original_mics
+        self.mic_array = np.array(self.mics).T
+        self.room.mic_array.R = self.mic_array
+        self._update_direct_delays()
+        
+        # Calculate and display overall test statistics
+        test_end_time = time.time()
+        test_duration = test_end_time - test_start_time
+        
+        print("\n===== TEST RESULTS SUMMARY =====\n")
+        print(f"Total test duration: {test_duration:.2f} seconds")
+        
+        # Generate summary plots
+        self._generate_test_summary_plots(all_results, output_dir)
+        
+        # Generate comprehensive test report
+        self._generate_test_report(all_results, output_dir)
+        
+        print(f"\nTest results saved to {output_dir}/")
+        print("\n===== COMPREHENSIVE TESTS COMPLETE =====\n")
+        
+        return all_results
+
+    def _generate_test_report(self, results, output_dir):
+        """
+        Generate comprehensive test report
+        
+        Args:
+            results (dict): All test results
+            output_dir (str): Output directory for report
+        """
+        # Create CSV report for each test category
+        
+        # 1. Microphone configuration report
+        mic_data = []
+        for config_name, result in results['mic_configs'].items():
+            if result['is_valid'] and result['targets'] > 0:
+                # Get metrics for first target
+                metrics = result['error_metrics'][0]
+                
+                row = {
+                    'Configuration': config_name,
+                    'Mean Error (m)': metrics['filtered_mean_error'],
+                    'Median Error (m)': metrics['filtered_median_error'],
+                    'Max Error (m)': metrics['filtered_max_error'],
+                    'X Error (m)': metrics['filtered_axis_mean'][0],
+                    'Y Error (m)': metrics['filtered_axis_mean'][1],
+                    'Z Error (m)': metrics['filtered_axis_mean'][2],
+                    'Valid Measurements (%)': metrics['valid_percentage'],
+                    'Computation Time (s)': result['computation_time']
+                }
+                mic_data.append(row)
+        
+        if mic_data:
+            import pandas as pd
+            df = pd.DataFrame(mic_data)
+            df.to_csv(f"{output_dir}/mic_config_results.csv", index=False)
+        
+        # 2. SNR level report
+        snr_data = []
+        for snr_name, result in results['snr_tests'].items():
+            if result['is_valid'] and result['targets'] > 0:
+                # Get metrics for first target
+                metrics = result['error_metrics'][0]
+                
+                row = {
+                    'SNR Level': snr_name,
+                    'Mean Error (m)': metrics['filtered_mean_error'],
+                    'Median Error (m)': metrics['filtered_median_error'],
+                    'Max Error (m)': metrics['filtered_max_error'],
+                    'X Error (m)': metrics['filtered_axis_mean'][0],
+                    'Y Error (m)': metrics['filtered_axis_mean'][1],
+                    'Z Error (m)': metrics['filtered_axis_mean'][2],
+                    'Valid Measurements (%)': metrics['valid_percentage'],
+                    'Computation Time (s)': result['computation_time']
+                }
+                snr_data.append(row)
+        
+        if snr_data:
+            import pandas as pd
+            df = pd.DataFrame(snr_data)
+            df.to_csv(f"{output_dir}/snr_results.csv", index=False)
+        
+        # 3. Movement pattern report
+        movement_data = []
+        for pattern_name, result in results['movement_tests'].items():
+            if result['is_valid'] and result['targets'] > 0:
+                # Get metrics for first target
+                metrics = result['error_metrics'][0]
+                
+                row = {
+                    'Movement Pattern': pattern_name,
+                    'Mean Error (m)': metrics['filtered_mean_error'],
+                    'Median Error (m)': metrics['filtered_median_error'],
+                    'Max Error (m)': metrics['filtered_max_error'],
+                    'X Error (m)': metrics['filtered_axis_mean'][0],
+                    'Y Error (m)': metrics['filtered_axis_mean'][1],
+                    'Z Error (m)': metrics['filtered_axis_mean'][2],
+                    'Valid Measurements (%)': metrics['valid_percentage'],
+                    'Computation Time (s)': result['computation_time']
+                }
+                movement_data.append(row)
+        
+        if movement_data:
+            import pandas as pd
+            df = pd.DataFrame(movement_data)
+            df.to_csv(f"{output_dir}/movement_results.csv", index=False)
+        
+        # 4. Generate consolidated HTML report
+        try:
+            self._generate_html_report(results, output_dir)
+        except Exception as e:
+            print(f"Error generating HTML report: {str(e)}")
+        
+        # Print summary of best configurations
+        print("\nBest Configurations Summary:")
+        
+        if mic_data:
+            best_mic = min(mic_data, key=lambda x: x['Mean Error (m)'])
+            print(f"  Best microphone config: {best_mic['Configuration']} with mean error: {best_mic['Mean Error (m)']:.3f} m")
+        
+        if snr_data:
+            valid_snr = [item for item in snr_data if item['Valid Measurements (%)'] > 50]
+            if valid_snr:
+                worst_tolerable_snr = min(valid_snr, key=lambda x: x['SNR Level'])
+                print(f"  Worst tolerable SNR: {worst_tolerable_snr['SNR Level']} with valid measurements: {worst_tolerable_snr['Valid Measurements (%)']:.1f}%")
+        
+        if movement_data:
+            challenging_movement = max(movement_data, key=lambda x: x['Mean Error (m)'])
+            print(f"  Most challenging movement: {challenging_movement['Movement Pattern']} with mean error: {challenging_movement['Mean Error (m)']:.3f} m")
+
+    def _visualize_ellipses(self, ellipses, step, output_dir="amt_debug_images/ellipses"):
+        """Visualize the ellipses used for multilateration
+        
+        Args:
+            ellipses (list): List of ellipse dictionaries
+            step (int): Current step number
+            output_dir (str): Directory to save images
+        """
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Create a figure with two subplots: top-down view and front view
+            fig, (ax_top, ax_front) = plt.subplots(1, 2, figsize=(18, 8))
+            
+            # TOP-DOWN VIEW (X-Y plane)
+            # Set limits
+            ax_top.set_xlim(0, self.room_dim[0])
+            ax_top.set_ylim(0, self.room_dim[1])
+            
+            # Draw room boundaries
+            ax_top.plot([0, self.room_dim[0], self.room_dim[0], 0, 0], 
+                    [0, 0, self.room_dim[1], self.room_dim[1], 0], 'k-', alpha=0.5)
+            
+            # Draw speakers
+            for i, pos in enumerate(self.speakers):
+                ax_top.plot(pos[0], pos[1], 'ro', markersize=8, label=f'Speaker {i+1}' if i == 0 else "")
+            
+            # Draw microphones
+            for i, pos in enumerate(self.mics):
+                ax_top.plot(pos[0], pos[1], 'bo', markersize=8, label=f'Mic {i+1}' if i == 0 else "")
+            
+            # Draw targets (ground truth)
+            for i, target in enumerate(self.targets):
+                pos = target['history'][step]
+                ax_top.plot(pos[0], pos[1], 'gs', markersize=10, label=f'{target["name"]} (True)' if i == 0 else "")
+            
+            # Draw ellipses in top-down view
+            for i, ellipse in enumerate(ellipses):
+                speaker_pos = ellipse['speaker_pos']
+                mic_pos = ellipse['mic_pos']
+                path_length = ellipse['path_length']
+                
+                # Calculate ellipse properties (2D projection in X-Y plane)
+                foci_distance = np.linalg.norm(speaker_pos[:2] - mic_pos[:2])
+                
+                # Only draw if the ellipse is physically possible
+                if path_length > foci_distance:
+                    try:
+                        a = path_length / 2  # Semi-major axis
+                        c = foci_distance / 2  # Half distance between foci
+                        b = np.sqrt(a**2 - c**2)  # Semi-minor axis
+                        
+                        # Center of ellipse
+                        center = (speaker_pos[:2] + mic_pos[:2]) / 2
+                        
+                        # Angle of ellipse
+                        angle = np.arctan2(mic_pos[1] - speaker_pos[1], mic_pos[0] - speaker_pos[0])
+                        angle_deg = np.degrees(angle)
+                        
+                        # Create ellipse
+                        ellipse_patch = Ellipse(xy=center, width=2*a, height=2*b, angle=angle_deg, 
+                                            fill=False, edgecolor=f'C{i%10}', linestyle='-', alpha=0.7,
+                                            label=f'Ellipse S{ellipse["speaker_idx"]}→M{ellipse["mic_idx"]}' if i == 0 else "")
+                        ax_top.add_patch(ellipse_patch)
+                        
+                        # Draw a line connecting the foci
+                        ax_top.plot([speaker_pos[0], mic_pos[0]], [speaker_pos[1], mic_pos[1]], 
+                                color=f'C{i%10}', linestyle=':', alpha=0.5)
+                    except Exception as e:
+                        print(f"Error drawing top-view ellipse: {e}")
+            
+            # Grid and labels for top-down view
+            ax_top.grid(True, alpha=0.3)
+            ax_top.set_xlabel('X (m)')
+            ax_top.set_ylabel('Y (m)')
+            ax_top.set_title(f'Step {step}: Multilateration Ellipses (Top-down view)')
+            
+            # Add legend to top-down view
+            handles, labels = ax_top.get_legend_handles_labels()
+            by_label = dict(zip(labels, handles))
+            ax_top.legend(by_label.values(), by_label.keys(), loc='upper right')
+            
+            # FRONT VIEW (X-Z plane)
+            # Set limits
+            ax_front.set_xlim(0, self.room_dim[0])
+            ax_front.set_ylim(0, self.room_dim[2])
+            
+            # Draw room boundaries
+            ax_front.plot([0, self.room_dim[0], self.room_dim[0], 0, 0], 
+                        [0, 0, self.room_dim[2], self.room_dim[2], 0], 'k-', alpha=0.5)
+            
+            # Draw speakers in front view (X-Z plane)
+            for i, pos in enumerate(self.speakers):
+                ax_front.plot(pos[0], pos[2], 'ro', markersize=8, label=f'Speaker {i+1}' if i == 0 else "")
+            
+            # Draw microphones in front view
+            for i, pos in enumerate(self.mics):
+                ax_front.plot(pos[0], pos[2], 'bo', markersize=8, label=f'Mic {i+1}' if i == 0 else "")
+            
+            # Draw targets (ground truth) in front view
+            for i, target in enumerate(self.targets):
+                pos = target['history'][step]
+                ax_front.plot(pos[0], pos[2], 'gs', markersize=10, label=f'{target["name"]} (True)' if i == 0 else "")
+            
+            # Add suptitle to the figure
+            fig.suptitle(f'Step {step}: Multilateration Ellipses', fontsize=16)
+            
+            # Save figure
+            plt.tight_layout()
+            plt.subplots_adjust(top=0.9)
+            filename = f"{output_dir}/ellipses_step{step:03d}.png"
+            fig.savefig(filename, dpi=300)
+            plt.close(fig)
+        except Exception as e:
+            print(f"Error in _visualize_ellipses: {e}")
+
+    def _create_ellipses_animation(self, output_dir):
+        """Create an animation of ellipses over time
+        
+        Args:
+            output_dir (str): Directory to save animation
+        """
+        # Skip if we don't have enough history
+        if not hasattr(self, 'ellipses_history') or len(self.ellipses_history) < 2:
+            return
+            
+        # Create figure
+        fig, ax = plt.subplots(figsize=(10, 8))
+        
+        # Function to update animation frame
+        def update_frame(step):
+            ax.clear()
+            
+            # Set limits
+            ax.set_xlim(0, self.room_dim[0])
+            ax.set_ylim(0, self.room_dim[1])
+            
+            # Draw room boundaries
+            ax.plot([0, self.room_dim[0], self.room_dim[0], 0, 0], 
+                [0, 0, self.room_dim[1], self.room_dim[1], 0], 'k-', alpha=0.5)
+            
+            # Draw speakers
+            for i, pos in enumerate(self.speakers):
+                ax.plot(pos[0], pos[1], 'ro', markersize=8)
+            
+            # Draw microphones
+            for i, pos in enumerate(self.mics):
+                ax.plot(pos[0], pos[1], 'bo', markersize=8)
+            
+            # Get ellipses for this step
+            if step < len(self.ellipses_history):
+                ellipses = self.ellipses_history[step]
+            else:
+                ellipses = []
+                
+            # Draw targets (ground truth)
+            for i, target in enumerate(self.targets):
+                if step < len(target['history']):
+                    pos = target['history'][step]
+                    ax.plot(pos[0], pos[1], 'gs', markersize=10, label=target['name'])
+                
+                    # Draw trajectory up to this point
+                    history = np.array(target['history'][:step+1])
+                    ax.plot(history[:, 0], history[:, 1], 'g-', alpha=0.5)
+                    
+                    # Draw estimated position if available
+                    if step < len(target['estimated_positions']) and target['estimated_positions'][step] is not None:
+                        est_pos = target['estimated_positions'][step]
+                        ax.plot(est_pos[0], est_pos[1], 'rx', markersize=8, label=f'{target["name"]} (Est)')
+                        
+                    # Draw filtered position
+                    if step < len(target['filtered_positions']):
+                        filt_pos = target['filtered_positions'][step]
+                        ax.plot(filt_pos[0], filt_pos[1], 'yx', markersize=8, label=f'{target["name"]} (Filt)')
+            
+            # Draw ellipses
+            for i, ellipse in enumerate(ellipses):
+                speaker_pos = ellipse['speaker_pos']
+                mic_pos = ellipse['mic_pos']
+                path_length = ellipse['path_length']
+                
+                # Calculate ellipse properties (2D projection)
+                foci_distance = np.linalg.norm(speaker_pos[:2] - mic_pos[:2])
+                
+                # Only draw if the ellipse is physically possible
+                if path_length > foci_distance:
+                    a = path_length / 2  # Semi-major axis
+                    c = foci_distance / 2  # Half distance between foci
+                    b = np.sqrt(a**2 - c**2)  # Semi-minor axis
+                    
+                    # Center of ellipse
+                    center = (speaker_pos[:2] + mic_pos[:2]) / 2
+                    
+                    # Angle of ellipse
+                    angle = np.arctan2(mic_pos[1] - speaker_pos[1], mic_pos[0] - speaker_pos[0])
+                    angle_deg = np.degrees(angle)
+                    
+                    # Create ellipse
+                    ellipse_patch = Ellipse(xy=center, width=2*a, height=2*b, angle=angle_deg, 
+                                        fill=False, edgecolor=f'C{i%10}', linestyle='-', alpha=0.7)
+                    ax.add_patch(ellipse_patch)
+                    
+                    # Draw a line connecting the foci
+                    ax.plot([speaker_pos[0], mic_pos[0]], [speaker_pos[1], mic_pos[1]], 
+                        color=f'C{i%10}', linestyle=':', alpha=0.5)
+            
+            # Grid and labels
+            ax.grid(True, alpha=0.3)
+            ax.set_xlabel('X (m)')
+            ax.set_ylabel('Y (m)')
+            ax.set_title(f'Step {step}: Multilateration Ellipses (Top-down view)')
+            
+            # Show legend only for the first target
+            handles, labels = ax.get_legend_handles_labels()
+            by_label = dict(zip(labels, handles))
+            ax.legend(by_label.values(), by_label.keys(), loc='upper right')
+            
+            return []
+        
+        # Create animation
+        anim = animation.FuncAnimation(
+            fig, update_frame, frames=len(self.ellipses_history),
+            interval=200, blit=True
+        )
+        
+        # Save animation
+        filename = f"{output_dir}/ellipses_animation.mp4"
+        try:
+            # Try to use FFMpegWriter if available
+            writer = animation.FFMpegWriter(fps=5, metadata=dict(artist='AMT+'), bitrate=5000)
+            anim.save(filename, writer=writer)
+            print(f"Saved ellipses animation to {filename}")
+        except Exception as e:
+            print(f"Error with FFMpegWriter: {str(e)}")
+            try:
+                # Fall back to PillowWriter if FFMpeg is not available
+                print("Falling back to PillowWriter...")
+                gif_filename = f"{output_dir}/ellipses_animation.gif"
+                anim.save(gif_filename, writer='pillow', fps=5)
+                print(f"Animation saved as GIF to {gif_filename}")
+            except Exception as e2:
+                print(f"Could not save animation: {str(e2)}")
+        
+        plt.close(fig)
+
+    def visualize_correlation_animation(self, interval=200, save_path=None):
+        """Create an animation of the correlation and MTI filtering results
+        
+        Args:
+            interval (int): Animation interval in milliseconds
+            save_path (str): Optional path to save the animation (e.g., 'correlation_animation.mp4')
+                
+        Returns:
+            animation.FuncAnimation: Animation object
+        """
+        if not hasattr(self, 'correlation_history') or not self.correlation_history:
+            print("No correlation history available. Run tracking first.")
+            return None
+            
+        # Create figure and subplots
+        n_pairs = len(self.correlation_history[0])
+        fig, axs = plt.subplots(n_pairs, 2, figsize=(16, 3.5*n_pairs))
+        
+        # If only one pair, make sure axs is 2D
+        if n_pairs == 1:
+            axs = np.array([axs])
+            
+        # Initialize plots
+        lines = []
+        peak_plots = []
+        target_markers = []
+        
+        # Get color map for different targets
+        cmap = plt.cm.get_cmap('tab10', len(self.targets))
+
+        for i, (s_idx, m_idx) in enumerate(self.correlation_history[0].keys()):
+            # Correlation plot
+            line, = axs[i, 0].plot([], [], 'b-', linewidth=1.5)
+            lines.append(line)
+            peak_plot = axs[i, 0].plot([], [], 'rx', markersize=8)[0]
+            peak_plots.append(peak_plot)
+            
+            # Add markers for each target's predicted echo position - one color per target
+            for t_idx in range(len(self.targets)):
+                marker, = axs[i, 0].plot([], [], 'o', color=cmap(t_idx), markersize=10, alpha=0.6, 
+                                    label=f"Target {t_idx+1}" if i == 0 else None)
+                target_markers.append(marker)
+            
+            # Direct path line
+            direct_delay = self.direct_delays[(s_idx, m_idx)]
+            axs[i, 0].axvline(x=direct_delay, color='r', linestyle='--', label='Direct Path' if i == 0 else None)
+            
+            # MTI difference plot
+            line, = axs[i, 1].plot([], [], 'g-', linewidth=1.5)
+            lines.append(line)
+            peak_plot = axs[i, 1].plot([], [], 'rx', markersize=8)[0]
+            peak_plots.append(peak_plot)
+            
+            # Add markers for each target's predicted echo position
+            for t_idx in range(len(self.targets)):
+                marker, = axs[i, 1].plot([], [], 'o', color=cmap(t_idx), markersize=10, alpha=0.6)
+                target_markers.append(marker)
+            
+            # Labels and styling
+            axs[i, 0].set_title(f"Correlation: Speaker {s_idx+1} → Mic {m_idx+1}")
+            axs[i, 1].set_title(f"MTI Filtered: Speaker {s_idx+1} → Mic {m_idx+1}")
+            
+            # Set y limits
+            axs[i, 0].set_ylim(0, 1.1)
+            axs[i, 1].set_ylim(0, 1.1)
+        
+            # Add distance axis (convert samples to meters)
+            ax2 = axs[i, 0].twiny()
+            max_samples = len(self.correlation_history[0][(s_idx, m_idx)]['correlation'])
+            max_dist = max_samples * self.c / self.fs
+            ax2.set_xlim(0, max_dist)
+            ax2.set_xlabel('Distance (m)')
+            
+            ax2 = axs[i, 1].twiny()
+            ax2.set_xlim(0, max_dist)
+            ax2.set_xlabel('Distance (m)')
+            
+            # Add grid
+            axs[i, 0].grid(True, alpha=0.3)
+            axs[i, 1].grid(True, alpha=0.3)
+        
+        # Add legend to first subplot only
+        if n_pairs > 0:
+            handles, labels = axs[0, 0].get_legend_handles_labels()
+            fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 0.99),
+                    ncol=len(self.targets)+1, frameon=True)
+        
+        # Frame counter text
+        frame_text = fig.text(0.02, 0.02, "", fontsize=12)
+        
+        # Animation update function
+        def update(frame):
+            if frame >= len(self.correlation_history):
+                return lines + peak_plots + target_markers + [frame_text]
+                    
+            echo_data = self.correlation_history[frame]
+            
+            line_idx = 0
+            peak_idx = 0
+            marker_idx = 0
+        
+            for (s_idx, m_idx), data in echo_data.items():
+                # Update correlation plot
+                corr = data['correlation']
+                lines[line_idx].set_data(np.arange(len(corr)), corr)
+                
+                # Set x limit based on data
+                axs[line_idx//2, 0].set_xlim(0, len(corr))
+                
+                # Update peak plot
+                peaks = data['peaks']
+                if len(peaks) > 0:
+                    peak_plots[peak_idx].set_data(peaks, corr[peaks])
+                else:
+                    peak_plots[peak_idx].set_data([], [])
+                
+                # Update target markers - show predicted echo positions
+                speaker_pos = self.speakers[s_idx]
+                mic_pos = self.mics[m_idx]
+                
+                for t_idx, target in enumerate(self.targets):
+                    # Get the target position at this frame
+                    if frame < len(target['history']):
+                        pos = target['history'][frame]
+                        
+                        # Calculate the expected echo delay
+                        to_target = np.linalg.norm(pos - speaker_pos)
+                        from_target = np.linalg.norm(mic_pos - pos)
+                        total_dist = to_target + from_target
+                        delay_samples = int(total_dist / self.c * self.fs)
+                        
+                        # Adjust for direct path
+                        direct_delay = self.direct_delays[(s_idx, m_idx)]
+                        relative_delay = delay_samples - direct_delay
+                        
+                        # Show marker at expected echo position
+                        if 0 <= relative_delay < len(corr):
+                            target_markers[marker_idx].set_data([delay_samples], [corr[relative_delay]])
+                        else:
+                            target_markers[marker_idx].set_data([], [])
+                    else:
+                        target_markers[marker_idx].set_data([], [])
+                    
+                    marker_idx += 1
+                
+                line_idx += 1
+                peak_idx += 1
+            
+                # Update difference plot
+                diff = data['diff']
+                lines[line_idx].set_data(np.arange(len(diff)), diff)
+                
+                # Set x limit based on data
+                axs[line_idx//2, 1].set_xlim(0, len(diff))
+                
+                # Update peak plot
+                if len(peaks) > 0:
+                    peak_plots[peak_idx].set_data(peaks, diff[peaks])
+                else:
+                    peak_plots[peak_idx].set_data([], [])
+                
+                # Update target markers for difference plot
+                for t_idx, target in enumerate(self.targets):
+                    if frame < len(target['history']):
+                        pos = target['history'][frame]
+                        
+                        to_target = np.linalg.norm(pos - speaker_pos)
+                        from_target = np.linalg.norm(mic_pos - pos)
+                        total_dist = to_target + from_target
+                        delay_samples = int(total_dist / self.c * self.fs)
+                        
+                        direct_delay = self.direct_delays[(s_idx, m_idx)]
+                        relative_delay = delay_samples - direct_delay
+                        
+                        if 0 <= relative_delay < len(diff):
+                            target_markers[marker_idx].set_data([delay_samples], [diff[relative_delay]])
+                        else:
+                            target_markers[marker_idx].set_data([], [])
+                    else:
+                        target_markers[marker_idx].set_data([], [])
+                    
+                    marker_idx += 1
+                
+                line_idx += 1
+                peak_idx += 1
+            
+            # Update frame counter
+            frame_text.set_text(f"Frame: {frame}/{len(self.correlation_history)-1}")
+            
+            # Update title
+            fig.suptitle(f"Step {frame}: Correlation and MTI Results", fontsize=16)
+            
+            return lines + peak_plots + target_markers + [frame_text]
+
+        # Create animation
+        anim = animation.FuncAnimation(
+            fig, update, frames=len(self.correlation_history),
+            interval=interval, blit=False
+        )
+        
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.92)
+        
+        # Save animation if requested
+        if save_path:
+            writer = animation.FFMpegWriter(fps=1000/interval, metadata=dict(artist='AMT+'), bitrate=5000)
+            anim.save(save_path, writer=writer)
+            print(f"Animation saved to {save_path}")
+        
+        return anim
 
 def analyze_constant_shift(tracker, output_dir):
     """Analyze whether there is a constant position shift in the tracking
@@ -2289,96 +3872,182 @@ def analyze_constant_shift(tracker, output_dir):
             print(f"\n{target['name']}: No valid estimated positions for analysis")
 
 def run_demo():
-    """Run a demonstration of the high-resolution acoustic tracking system"""
-    # Create tracker
-    tracker = AcousticTracker()
+    """Run a demonstration of the high-resolution acoustic tracking system with performance optimizations"""
+    import time
+    import os
     
     # Create output directory for saving images
-    import os
     output_dir = "amt_debug_images"
     os.makedirs(output_dir, exist_ok=True)
+    
+    # Performance measurement
+    total_start_time = time.time()
+    
+    # Create tracker
+    print("Initializing acoustic tracker...")
+    tracker = AcousticTracker(debug_mode=True)
     
     # Add targets with perpendicular trajectories (to better demonstrate tracking)
     tracker.add_target((2.5, 3.0, 1.7), velocity=(0.3, 0, 0), name="Person 1")
     tracker.add_target((1.5, 4.0, 1.6), velocity=(0, 0.25, 0), name="Person 2")
     
     try:
-        # Run tracking simulation
-        print("Running tracking simulation...")
-        tracker.run_tracking(duration=5.0, steps=40)  # More steps for smoother tracking
+        # Run tracking simulation with performance metrics
+        print("\nRunning tracking simulation...")
+        tracking_start = time.time()
+        # Use fewer steps for faster execution while testing
+        tracker.run_tracking(duration=5.0, steps=15)  # Reduced steps for faster execution
+        tracking_time = time.time() - tracking_start
+        print(f"Tracking completed in {tracking_time:.2f} seconds")
     except Exception as e:
         print(f"Error during tracking simulation: {str(e)}")
         import traceback
         traceback.print_exc()
     
-    try:
-        # Visualize correlation for an early and late frame
-        print("\nVisualization of correlation and MTI for frame 5:")
-        fig = tracker.visualize_correlation(step=5)
-        if fig:
-            fig.savefig(f"{output_dir}/correlation_frame5.png", dpi=300)
-            print(f"Saved to {output_dir}/correlation_frame5.png")
-    except Exception as e:
-        print(f"Error generating correlation frame 5: {str(e)}")
+    # Selective visualization for better performance
+    # Only generate the most important visualizations
     
     try:
-        print("\nVisualization of correlation and MTI for frame 30:")
-        fig = tracker.visualize_correlation(step=30)
-        if fig:
-            fig.savefig(f"{output_dir}/correlation_frame30.png", dpi=300)
-            print(f"Saved to {output_dir}/correlation_frame30.png")
+        # Just a few key frames for correlation visualization
+        frames_to_show = [4, 8]
+        for frame in frames_to_show:
+            if frame < len(tracker.correlation_history):
+                print(f"\nGenerating correlation visualization for frame {frame}...")
+                fig = tracker.visualize_correlation(step=frame)
+                if fig:
+                    fig.savefig(f"{output_dir}/correlation_frame{frame}.png", dpi=300)
     except Exception as e:
-        print(f"Error generating correlation frame 30: {str(e)}")
+        print(f"Error generating correlation frames: {str(e)}")
     
-    try:
-        # Create and save correlation animation
-        print("\nCreating correlation and MTI filtering animation:")
-        anim = tracker.visualize_correlation_animation(save_path=f"{output_dir}/correlation_animation.mp4")
-        print(f"Saved to {output_dir}/correlation_animation.mp4")
-    except Exception as e:
-        print(f"Error generating correlation animation: {str(e)}")
+    # Skip animation generation for better performance
+    # Only create if explicitly needed
+    if False:  # Set to True if animation is needed
+        try:
+            print("\nCreating correlation animation...")
+            anim = tracker.visualize_correlation_animation(save_path=f"{output_dir}/correlation_animation.mp4")
+        except Exception as e:
+            print(f"Error generating correlation animation: {str(e)}")
     
     try:
         # Compare raw estimation vs Kalman filtered tracking and save the comparison
-        print("\nComparing raw estimated vs Kalman filtered tracking:")
+        print("\nGenerating tracking comparison...")
         fig = tracker.compare_tracking()
         if fig:
             fig.savefig(f"{output_dir}/tracking_comparison.png", dpi=300)
-            print(f"Saved to {output_dir}/tracking_comparison.png")
     except Exception as e:
         print(f"Error generating tracking comparison: {str(e)}")
     
     try:
-        # Visualize results with Kalman filtering and save
-        print("\nVisualization of Kalman filtered tracking results:")
+        # Visualize final tracking results
+        print("\nGenerating tracking visualizations...")
+        # Only generate filtered visualization (more important than raw)
         fig = tracker.visualize(use_filtered=True)
         if fig:
             fig.savefig(f"{output_dir}/filtered_tracking.png", dpi=300)
-            print(f"Saved to {output_dir}/filtered_tracking.png")
     except Exception as e:
-        print(f"Error generating filtered tracking visualization: {str(e)}")
+        print(f"Error generating tracking visualization: {str(e)}")
     
     try:
-        # Visualize results without Kalman filtering (raw data) and save
-        print("\nVisualization of raw tracking results (without Kalman filtering):")
-        fig = tracker.visualize(use_filtered=False)
-        if fig:
-            fig.savefig(f"{output_dir}/raw_tracking.png", dpi=300)
-            print(f"Saved to {output_dir}/raw_tracking.png")
-    except Exception as e:
-        print(f"Error generating raw tracking visualization: {str(e)}")
-    
-    try:
-        # Analyze potential constant shift bug
-        analyze_constant_shift(tracker, output_dir)
+        # Analyze any potential constant shift issues
+        print("\nAnalyzing position errors...")
+        tracker.analyze_position_shift(num_steps=15)
     except Exception as e:
         print(f"Error during constant shift analysis: {str(e)}")
     
-    print(f"\nAll debug images saved to '{output_dir}' directory")
-
+    # Report total runtime
+    total_time = time.time() - total_start_time
+    print(f"\nDemo completed in {total_time:.2f} seconds")
+    print(f"Debug images saved to '{output_dir}' directory")
 
 # For installing required packages:
 # pip install numpy matplotlib scipy pyroomacoustics filterpy
 
+def main():
+    """
+    Main function to demonstrate the AMT3D system
+    """
+    print("Starting AMT3D: Acoustic Multi-target Tracking in 3D")
+    
+    # Create acoustic tracker with default room dimensions
+    tracker = AcousticTracker(room_dim=(5.0, 6.0, 2.4), debug_mode=True)
+    
+    # Display system information
+    print(f"Room dimensions: {tracker.room_dim}")
+    print(f"Number of speakers: {len(tracker.speakers)}")
+    print(f"Number of microphones: {len(tracker.mics)}")
+    print(f"Speed of sound: {tracker.c} m/s")
+    
+    # Choose mode
+    print("\nSelect mode:")
+    print("1. Run simple demo")
+    print("2. Run comprehensive tests")
+    print("3. Run position shift analysis")
+    
+    mode = input("Enter mode (1-3): ")
+    
+    if mode == "1":
+        # Simple demo with targets moving in different patterns
+        print("\nRunning simple demo...")
+        
+        # Add targets
+        tracker.add_target(
+            position=[1.0, 1.0, 1.2],
+            velocity=[0.2, 0.2, 0.0],
+            name="Target_1"
+        )
+        tracker.add_target(
+            position=[4.0, 1.0, 1.0],
+            velocity=[-0.1, 0.25, 0.05],
+            name="Target_2"
+        )
+        
+        # Run tracking
+        tracker.run_tracking(duration=10.0, steps=50)
+        
+        # Visualize results
+        fig = tracker.visualize()
+        fig.savefig("amt_demo_results.png", dpi=300)
+        print(f"Demo visualization saved to amt_demo_results.png")
+        
+        # Show visualization
+        plt.show()
+        
+    elif mode == "2":
+        # Run comprehensive tests
+        print("\nRunning comprehensive tests (this may take some time)...")
+        tracker.run_comprehensive_tests()
+        
+    elif mode == "3":
+        # Run position shift analysis
+        print("\nRunning position shift analysis...")
+        
+        # Add a target with known position for analysis
+        tracker.add_target(
+            position=[2.5, 3.0, 1.2],
+            velocity=[0.0, 0.0, 0.0],
+            name="Reference_Target"
+        )
+        
+        # Analyze position shift
+        diagnostics = tracker.analyze_position_shift(num_steps=15)
+        
+        if diagnostics['global']['has_consistent_shift']:
+            correction = diagnostics['global']['correction_vector']
+            print(f"Position shift detected: {-correction}")
+            print(f"Consider applying this correction vector to calibrate your system")
+        else:
+            print("No consistent position shift detected")
+    
+    else:
+        print("Invalid mode selected. Exiting.")
+    
+    print("\nAMT3D demonstration completed.")
+
 if __name__ == "__main__":
-    run_demo()
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import time
+    import os
+    
+    # Run the main function
+    main()
