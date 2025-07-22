@@ -10,6 +10,9 @@ from filterpy.kalman import KalmanFilter
 from scipy.linalg import block_diag
 import time
 import os
+import pandas as pd
+import csv
+from datetime import datetime
 
 class AcousticTracker:
     """Acoustic multi-target tracking system using home theater setup with pyroomacoustics and Kalman filtering"""
@@ -41,6 +44,15 @@ class AcousticTracker:
         
         # Dictionary to store Kalman filters for each target
         self.kalman_filters = {}
+        
+        # Data export functionality
+        self.data_export_enabled = True
+        self.export_directory = "simulation_data"
+        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create export directory
+        if self.data_export_enabled:
+            os.makedirs(self.export_directory, exist_ok=True)
     
     def setup_room(self):
         """Set up the room, speakers, and microphones with optimized geometry"""
@@ -68,12 +80,11 @@ class AcousticTracker:
         ]
         
         # Microphone positions - soundbar-like arrangement at the front
-        self.mics = [
-            np.array([width/2 - 0.5, 0.3, 1.0]),  # Left Mic
-            np.array([width/2 + 0.5, 0.3, 1.0]),  # Right Mic
-            np.array([width/2      , 0.3, 0.9]),  # Center Mic Up
-            np.array([width/2      , 0.3, 1.1]),  # Center Mic Down
-        ]
+        self.mics = np.array([
+                    [1.5, 0.3, 1.0],    # Left mic
+                    [3.5, 0.3, 1.0],    # Right mic
+                    [2.5, 0.7, 1.0]     # Back-center mic
+                ])
         
         # Create microphone array
         self.mic_array = np.array(self.mics).T  # pyroomacoustics expects shape (3, n_mics)
@@ -310,6 +321,170 @@ class AcousticTracker:
             
             # Store in tracking data
             self.tracking_data[target['id']]['true_positions'].append(new_pos.copy())
+    
+    def export_tracking_data(self, filename_suffix=""):
+        """Export tracking data to CSV files for analysis
+        
+        Args:
+            filename_suffix (str): Additional suffix for filename
+        """
+        if not self.data_export_enabled:
+            return
+            
+        timestamp = datetime.now().strftime("%H%M%S")
+        base_filename = f"{self.session_id}_{timestamp}"
+        if filename_suffix:
+            base_filename += f"_{filename_suffix}"
+        
+        # Export true positions
+        true_positions_data = []
+        for target_id, data in self.tracking_data.items():
+            for step, pos in enumerate(data['true_positions']):
+                true_positions_data.append({
+                    'target_id': target_id,
+                    'step': step,
+                    'time': step * 0.1,  # Assuming default dt
+                    'x': pos[0],
+                    'y': pos[1],
+                    'z': pos[2],
+                    'type': 'true'
+                })
+        
+        # Export estimated positions
+        estimated_positions_data = []
+        for target_id, data in self.tracking_data.items():
+            if 'estimated_positions' in data:
+                for step, pos in enumerate(data['estimated_positions']):
+                    estimated_positions_data.append({
+                        'target_id': target_id,
+                        'step': step,
+                        'time': step * 0.1,
+                        'x': pos[0],
+                        'y': pos[1],
+                        'z': pos[2],
+                        'type': 'estimated'
+                    })
+        
+        # Export filtered positions
+        filtered_positions_data = []
+        for target_id, data in self.tracking_data.items():
+            if 'filtered_positions' in data:
+                for step, pos in enumerate(data['filtered_positions']):
+                    filtered_positions_data.append({
+                        'target_id': target_id,
+                        'step': step,
+                        'time': step * 0.1,
+                        'x': pos[0],
+                        'y': pos[1],
+                        'z': pos[2],
+                        'type': 'filtered'
+                    })
+        
+        # Save to CSV files
+        if true_positions_data:
+            df_true = pd.DataFrame(true_positions_data)
+            df_true.to_csv(f"{self.export_directory}/{base_filename}_true_positions.csv", index=False)
+        
+        if estimated_positions_data:
+            df_est = pd.DataFrame(estimated_positions_data)
+            df_est.to_csv(f"{self.export_directory}/{base_filename}_estimated_positions.csv", index=False)
+        
+        if filtered_positions_data:
+            df_filt = pd.DataFrame(filtered_positions_data)
+            df_filt.to_csv(f"{self.export_directory}/{base_filename}_filtered_positions.csv", index=False)
+        
+        print(f"Exported tracking data to {self.export_directory}/{base_filename}_*.csv")
+    
+    def export_system_config(self):
+        """Export system configuration to CSV"""
+        if not self.data_export_enabled:
+            return
+            
+        # Export speaker positions
+        speakers_data = []
+        for i, pos in enumerate(self.speakers):
+            speakers_data.append({
+                'speaker_id': i,
+                'x': pos[0],
+                'y': pos[1],
+                'z': pos[2],
+                'label': ['FL', 'C', 'FR', 'SL', 'SR'][i]
+            })
+        
+        # Export microphone positions
+        mics_data = []
+        for i, pos in enumerate(self.mics):
+            mics_data.append({
+                'mic_id': i,
+                'x': pos[0],
+                'y': pos[1],
+                'z': pos[2],
+                'label': ['ML', 'MR', 'MU', 'MD'][i]
+            })
+        
+        # Export system parameters
+        system_data = [{
+            'room_width': self.room_dim[0],
+            'room_length': self.room_dim[1],
+            'room_height': self.room_dim[2],
+            'speed_of_sound': self.c,
+            'sampling_rate': self.fs,
+            'session_id': self.session_id
+        }]
+        
+        # Save to CSV files
+        pd.DataFrame(speakers_data).to_csv(f"{self.export_directory}/{self.session_id}_speakers.csv", index=False)
+        pd.DataFrame(mics_data).to_csv(f"{self.export_directory}/{self.session_id}_microphones.csv", index=False)
+        pd.DataFrame(system_data).to_csv(f"{self.export_directory}/{self.session_id}_system_config.csv", index=False)
+        
+        print(f"Exported system configuration to {self.export_directory}/{self.session_id}_*.csv")
+    
+    def export_performance_metrics(self, noise_snr=None, movement_pattern=""):
+        """Export performance metrics for current simulation"""
+        if not self.data_export_enabled or not self.tracking_data:
+            return
+        
+        metrics_data = []
+        
+        for target_id, data in self.tracking_data.items():
+            true_positions = np.array(data['true_positions'])
+            
+            if 'filtered_positions' in data and len(data['filtered_positions']) > 0:
+                filtered_positions = np.array(data['filtered_positions'])
+                
+                # Align arrays
+                min_len = min(len(true_positions), len(filtered_positions))
+                true_pos = true_positions[:min_len]
+                filt_pos = filtered_positions[:min_len]
+                
+                # Calculate errors
+                errors = np.abs(filt_pos - true_pos)
+                overall_errors = np.linalg.norm(errors, axis=1)
+                
+                metrics_data.append({
+                    'target_id': target_id,
+                    'noise_snr': noise_snr if noise_snr is not None else 'N/A',
+                    'movement_pattern': movement_pattern,
+                    'mean_x_error': np.mean(errors[:, 0]),
+                    'mean_y_error': np.mean(errors[:, 1]),
+                    'mean_z_error': np.mean(errors[:, 2]),
+                    'std_x_error': np.std(errors[:, 0]),
+                    'std_y_error': np.std(errors[:, 1]),
+                    'std_z_error': np.std(errors[:, 2]),
+                    'mean_3d_error': np.mean(overall_errors),
+                    'std_3d_error': np.std(overall_errors),
+                    'max_3d_error': np.max(overall_errors),
+                    'p90_3d_error': np.percentile(overall_errors, 90),
+                    'p95_3d_error': np.percentile(overall_errors, 95),
+                    'num_samples': len(overall_errors),
+                    'session_id': self.session_id
+                })
+        
+        if metrics_data:
+            timestamp = datetime.now().strftime("%H%M%S")
+            filename = f"{self.export_directory}/{self.session_id}_{timestamp}_metrics.csv"
+            pd.DataFrame(metrics_data).to_csv(filename, index=False)
+            print(f"Exported performance metrics to {filename}")
     
     def simulate_echoes(self, block_length=2048, noise_snr=None):
         """Simulate acoustic echoes using simplified model
@@ -1133,6 +1308,13 @@ class AcousticTracker:
         
         # Create animation of ellipses over time
         self._create_ellipses_animation(output_dir)
+        
+        # Export tracking data to CSV
+        if self.data_export_enabled:
+            movement_pattern = getattr(self, '_current_movement_pattern', 'unknown')
+            self.export_tracking_data(f"tracking_{steps}steps")
+            self.export_performance_metrics(noise_snr=noise_snr, movement_pattern=movement_pattern)
+            self.export_system_config()
         
         return self.tracking_data
         
@@ -2773,9 +2955,15 @@ class AcousticTracker:
                 filtered_median_error = np.median(filtered_errors)
                 filtered_max_error = np.max(filtered_errors)
                 
-                # Per-axis errors
+                # Per-axis errors with additional statistics
                 filtered_axis_errors = filtered_positions - true_positions
                 filtered_axis_mean = np.mean(np.abs(filtered_axis_errors), axis=0)
+                filtered_axis_std = np.std(np.abs(filtered_axis_errors), axis=0)
+                
+                # Additional 3D error statistics
+                filtered_std_error = np.std(filtered_errors)
+                filtered_p90_error = np.percentile(filtered_errors, 90)
+                filtered_p95_error = np.percentile(filtered_errors, 95)
                 
                 # Store metrics
                 results['error_metrics'][target_id] = {
@@ -2786,7 +2974,11 @@ class AcousticTracker:
                     'filtered_mean_error': filtered_mean_error,
                     'filtered_median_error': filtered_median_error,
                     'filtered_max_error': filtered_max_error,
+                    'filtered_std_error': filtered_std_error,
+                    'filtered_p90_error': filtered_p90_error,
+                    'filtered_p95_error': filtered_p95_error,
                     'filtered_axis_mean': filtered_axis_mean.tolist(),
+                    'filtered_axis_std': filtered_axis_std.tolist(),
                     'valid_percentage': valid_percentage
                 }
             
@@ -2798,6 +2990,9 @@ class AcousticTracker:
                 print(f"  First target metrics:")
                 print(f"    Filtered mean error: {metrics['filtered_mean_error']:.3f} m")
                 print(f"    Raw measurements available: {metrics['valid_percentage']:.1f}%")
+            
+            # Export comprehensive test data for analysis
+            self._export_test_data(test_name, results)
             
             # Save visualization
             filename = f"amt_test_results/{test_name}_visualization.png"
@@ -2816,6 +3011,181 @@ class AcousticTracker:
             delattr(self, '_original_update_targets')
         
         return results
+    
+    def _export_test_data(self, test_name, results):
+        """Export comprehensive test data for analysis
+        
+        Args:
+            test_name (str): Name of the test
+            results (dict): Test results containing metrics and data
+        """
+        if not self.data_export_enabled:
+            return
+            
+        # Export position data for each target
+        for target in self.targets:
+            target_id = target['id']
+            
+            # Prepare position data
+            position_data = []
+            
+            # Get all position arrays with the same length
+            true_positions = np.array(target['history'])
+            filtered_positions = np.array(target['filtered_positions'])
+            estimated_positions = target.get('estimated_positions', [None] * len(true_positions))
+            
+            # Ensure all arrays have the same length
+            min_length = min(len(true_positions), len(filtered_positions))
+            true_positions = true_positions[:min_length]
+            filtered_positions = filtered_positions[:min_length]
+            estimated_positions = estimated_positions[:min_length]
+            
+            # Create time array
+            time_array = np.linspace(0, results['duration'], min_length)
+            
+            # Export true positions
+            for step in range(min_length):
+                position_data.append({
+                    'target_id': target_id,
+                    'step': step,
+                    'time': time_array[step],
+                    'x': true_positions[step][0],
+                    'y': true_positions[step][1], 
+                    'z': true_positions[step][2],
+                    'type': 'true'
+                })
+            
+            # Export filtered positions
+            for step in range(min_length):
+                position_data.append({
+                    'target_id': target_id,
+                    'step': step,
+                    'time': time_array[step],
+                    'x': filtered_positions[step][0],
+                    'y': filtered_positions[step][1],
+                    'z': filtered_positions[step][2], 
+                    'type': 'filtered'
+                })
+            
+            # Export estimated positions (if available)
+            for step in range(min_length):
+                if estimated_positions[step] is not None:
+                    position_data.append({
+                        'target_id': target_id,
+                        'step': step,
+                        'time': time_array[step],
+                        'x': estimated_positions[step][0],
+                        'y': estimated_positions[step][1],
+                        'z': estimated_positions[step][2],
+                        'type': 'estimated'
+                    })
+            
+            # Save position data
+            if position_data:
+                df_positions = pd.DataFrame(position_data)
+                filename = f"{self.export_directory}/{self.session_id}_{test_name}_positions.csv"
+                df_positions.to_csv(filename, index=False)
+        
+        # Export comprehensive metrics
+        metrics_data = []
+        for target_id, metrics in results['error_metrics'].items():
+            # Extract SNR value from test name
+            snr_value = None
+            if 'snr_' in test_name.lower():
+                try:
+                    if 'no_noise' in test_name.lower():
+                        snr_value = 999  # Very high SNR for no noise
+                    else:
+                        # Extract SNR from test name like "snr_SNR_20dB"
+                        parts = test_name.lower().split('_')
+                        for i, part in enumerate(parts):
+                            if part == 'snr' and i + 1 < len(parts):
+                                snr_str = parts[i + 1].replace('db', '')
+                                snr_value = float(snr_str)
+                                break
+                except:
+                    snr_value = 20  # Default SNR
+            else:
+                snr_value = 20  # Default for non-SNR tests
+            
+            metrics_row = {
+                'target_id': target_id,
+                'test_name': test_name,
+                'noise_snr': snr_value,
+                'movement_pattern': test_name.replace('snr_', '').replace('mic_config_', '').replace('movement_', ''),
+                'mean_x_error': metrics['filtered_axis_mean'][0],
+                'mean_y_error': metrics['filtered_axis_mean'][1], 
+                'mean_z_error': metrics['filtered_axis_mean'][2],
+                'std_x_error': metrics.get('filtered_axis_std', [0, 0, 0])[0],
+                'std_y_error': metrics.get('filtered_axis_std', [0, 0, 0])[1],
+                'std_z_error': metrics.get('filtered_axis_std', [0, 0, 0])[2],
+                'mean_3d_error': metrics['filtered_mean_error'],
+                'std_3d_error': metrics.get('filtered_std_error', 0),
+                'max_3d_error': metrics['filtered_max_error'],
+                'p90_3d_error': metrics.get('filtered_p90_error', 0),
+                'p95_3d_error': metrics.get('filtered_p95_error', 0),
+                'num_samples': len(self.targets[target_id]['history']) if target_id < len(self.targets) else 0,
+                'session_id': self.session_id,
+                'computation_time': results['computation_time'],
+                'valid_percentage': metrics['valid_percentage']
+            }
+            metrics_data.append(metrics_row)
+        
+        # Save metrics data
+        if metrics_data:
+            df_metrics = pd.DataFrame(metrics_data)
+            filename = f"{self.export_directory}/{self.session_id}_{test_name}_metrics.csv"
+            df_metrics.to_csv(filename, index=False)
+        
+        # Export system configuration for this test
+        self._export_test_system_config(test_name, results)
+        
+        print(f"  Exported test data to {self.export_directory}/{self.session_id}_{test_name}_*.csv")
+    
+    def _export_test_system_config(self, test_name, results):
+        """Export system configuration for a specific test"""
+        # Export speaker positions
+        speakers_data = []
+        for i, pos in enumerate(self.speakers):
+            speakers_data.append({
+                'speaker_id': i,
+                'x': pos[0], 
+                'y': pos[1],
+                'z': pos[2],
+                'label': ['FL', 'C', 'FR', 'SL', 'SR'][i] if i < 5 else f'S{i}'
+            })
+        
+        # Export microphone positions  
+        mics_data = []
+        for i, pos in enumerate(self.mics):
+            mics_data.append({
+                'mic_id': i,
+                'x': pos[0],
+                'y': pos[1], 
+                'z': pos[2],
+                'label': f'M{i}'
+            })
+        
+        # Export system configuration
+        system_data = [{
+            'test_name': test_name,
+            'room_width': self.room_dim[0],
+            'room_length': self.room_dim[1],
+            'room_height': self.room_dim[2],
+            'speed_of_sound': self.c,
+            'sampling_rate': self.fs,
+            'session_id': self.session_id,
+            'noise_snr': results.get('noise_snr', None),
+            'duration': results.get('duration', 0),
+            'steps': results.get('steps', 0),
+            'num_speakers': len(self.speakers),
+            'num_mics': len(self.mics)
+        }]
+        
+        # Save configuration files
+        pd.DataFrame(speakers_data).to_csv(f"{self.export_directory}/{self.session_id}_{test_name}_speakers.csv", index=False)
+        pd.DataFrame(mics_data).to_csv(f"{self.export_directory}/{self.session_id}_{test_name}_microphones.csv", index=False)
+        pd.DataFrame(system_data).to_csv(f"{self.export_directory}/{self.session_id}_{test_name}_system_config.csv", index=False)
     
     def _plot_snr_comparison(self, snr_results, output_dir):
         """Plot comparison of SNR levels"""
@@ -3168,10 +3538,78 @@ class AcousticTracker:
         # Generate comprehensive test report
         self._generate_test_report(all_results, output_dir)
         
+        # Export consolidated metrics for all tests
+        self._export_consolidated_metrics(all_results)
+        
         print(f"\nTest results saved to {output_dir}/")
         print("\n===== COMPREHENSIVE TESTS COMPLETE =====\n")
         
         return all_results
+
+    def _export_consolidated_metrics(self, all_results):
+        """Export consolidated metrics from all comprehensive tests"""
+        if not self.data_export_enabled:
+            return
+            
+        consolidated_metrics = []
+        
+        # Process all test categories
+        for category, tests in all_results.items():
+            for test_name, result in tests.items():
+                if result.get('is_valid', False) and result.get('targets', 0) > 0:
+                    # Get metrics for the first target (target_id 0)
+                    if 0 in result.get('error_metrics', {}):
+                        metrics = result['error_metrics'][0]
+                        
+                        # Extract SNR value
+                        snr_value = result.get('noise_snr', 20)
+                        if snr_value is None:
+                            snr_value = 999  # No noise case
+                        
+                        # Determine movement pattern from test name
+                        movement_pattern = test_name
+                        if category == 'mic_configs':
+                            movement_pattern = f"linear_{test_name}"
+                        elif category == 'snr_tests':
+                            movement_pattern = f"linear_snr_{snr_value}"
+                        elif category == 'movement_tests':
+                            movement_pattern = test_name
+                        
+                        # Create consolidated metrics entry
+                        metrics_entry = {
+                            'target_id': 0,
+                            'test_category': category,
+                            'test_name': test_name,
+                            'noise_snr': snr_value,
+                            'movement_pattern': movement_pattern,
+                            'mean_x_error': metrics['filtered_axis_mean'][0],
+                            'mean_y_error': metrics['filtered_axis_mean'][1],
+                            'mean_z_error': metrics['filtered_axis_mean'][2],
+                            'std_x_error': metrics.get('filtered_axis_std', [0, 0, 0])[0],
+                            'std_y_error': metrics.get('filtered_axis_std', [0, 0, 0])[1],
+                            'std_z_error': metrics.get('filtered_axis_std', [0, 0, 0])[2],
+                            'mean_3d_error': metrics['filtered_mean_error'],
+                            'std_3d_error': metrics.get('filtered_std_error', 0),
+                            'max_3d_error': metrics['filtered_max_error'],
+                            'p90_3d_error': metrics.get('filtered_p90_error', 0),
+                            'p95_3d_error': metrics.get('filtered_p95_error', 0),
+                            'num_samples': result.get('steps', 0),
+                            'session_id': self.session_id,
+                            'computation_time': result.get('computation_time', 0),
+                            'valid_percentage': metrics.get('valid_percentage', 100),
+                            'duration': result.get('duration', 0),
+                            'num_mics': len(result.get('mics', [])),
+                            'mic_config': test_name if category == 'mic_configs' else 'default'
+                        }
+                        
+                        consolidated_metrics.append(metrics_entry)
+        
+        # Save consolidated metrics
+        if consolidated_metrics:
+            df_consolidated = pd.DataFrame(consolidated_metrics)
+            filename = f"{self.export_directory}/{self.session_id}_all_comprehensive_metrics.csv"
+            df_consolidated.to_csv(filename, index=False)
+            print(f"Exported consolidated metrics to {filename}")
 
     def _generate_test_report(self, results, output_dir):
         """
@@ -3889,7 +4327,7 @@ def run_demo():
     
     # Add targets with perpendicular trajectories (to better demonstrate tracking)
     tracker.add_target((2.5, 3.0, 1.7), velocity=(0.3, 0, 0), name="Person 1")
-    tracker.add_target((1.5, 4.0, 1.6), velocity=(0, 0.25, 0), name="Person 2")
+    tracker.add_target((1.5, 4.0, 1.6), velocity=(0, 0.25, 0.1), name="Person 2")
     
     try:
         # Run tracking simulation with performance metrics
@@ -3962,6 +4400,1042 @@ def run_demo():
 # For installing required packages:
 # pip install numpy matplotlib scipy pyroomacoustics filterpy
 
+def generate_report_figures():
+    """Generate all figures needed for the research report"""
+    print("Generating figures for AMT3D research report...")
+    
+    # Create output directory
+    figures_dir = "report_figures"
+    os.makedirs(figures_dir, exist_ok=True)
+    
+    # Initialize tracker
+    tracker = AcousticTracker(room_dim=(5.0, 6.0, 2.4), debug_mode=False)
+    
+    # Figure 1: System Architecture and Setup
+    generate_system_architecture_figure(tracker, figures_dir)
+    
+    # Figure 2: Geometric Quality Analysis
+    generate_geometric_quality_figure(tracker, figures_dir)
+    
+    # Figure 3: 3D Tracking Performance Comparison
+    generate_tracking_performance_figure(tracker, figures_dir)
+    
+    # Figure 4: Ellipsoid Intersection Visualization
+    generate_ellipsoid_intersection_figure(tracker, figures_dir)
+    
+    # Figure 5: Movement Pattern Results
+    generate_movement_pattern_results(tracker, figures_dir)
+    
+    # Figure 6: SNR vs Accuracy Analysis
+    generate_snr_accuracy_analysis(tracker, figures_dir)
+    
+    # Figure 7: 2D vs 3D Comparison
+    generate_2d_vs_3d_comparison(tracker, figures_dir)
+    
+    print(f"All report figures generated in '{figures_dir}' directory")
+
+def generate_system_architecture_figure(tracker, output_dir):
+    """Generate 3D system architecture figure"""
+    fig = plt.figure(figsize=(12, 10))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Plot room boundaries
+    width, length, height = tracker.room_dim
+    
+    # Room corners
+    corners = np.array([
+        [0, 0, 0], [width, 0, 0], [width, length, 0], [0, length, 0],  # Floor
+        [0, 0, height], [width, 0, height], [width, length, height], [0, length, height]  # Ceiling
+    ])
+    
+    # Draw room frame
+    # Floor
+    floor_lines = [[0,1], [1,2], [2,3], [3,0]]
+    for line in floor_lines:
+        ax.plot3D(*corners[line].T, 'k-', alpha=0.3, linewidth=1)
+    
+    # Ceiling
+    ceiling_lines = [[4,5], [5,6], [6,7], [7,4]]
+    for line in ceiling_lines:
+        ax.plot3D(*corners[line].T, 'k-', alpha=0.3, linewidth=1)
+    
+    # Vertical edges
+    vertical_lines = [[0,4], [1,5], [2,6], [3,7]]
+    for line in vertical_lines:
+        ax.plot3D(*corners[line].T, 'k-', alpha=0.3, linewidth=1)
+    
+    # Plot speakers
+    speakers = np.array(tracker.speakers)
+    ax.scatter(speakers[:, 0], speakers[:, 1], speakers[:, 2], 
+               c='red', s=200, marker='^', label='Speakers', alpha=0.8)
+    
+    # Label speakers
+    speaker_labels = ['FL', 'C', 'FR', 'SL', 'SR']
+    for i, (pos, label) in enumerate(zip(speakers, speaker_labels)):
+        ax.text(pos[0], pos[1], pos[2] + 0.1, label, fontsize=10, ha='center')
+    
+    # Plot microphones
+    mics = np.array(tracker.mics)
+    ax.scatter(mics[:, 0], mics[:, 1], mics[:, 2], 
+               c='blue', s=200, marker='o', label='Microphones', alpha=0.8)
+    
+    # Label microphones
+    mic_labels = ['ML', 'MR', 'MU', 'MD']
+    for i, (pos, label) in enumerate(zip(mics, mic_labels)):
+        ax.text(pos[0], pos[1], pos[2] + 0.1, label, fontsize=10, ha='center')
+    
+    # Add sample target
+    sample_target = np.array([2.5, 3.0, 1.2])
+    ax.scatter(*sample_target, c='green', s=300, marker='*', label='Target', alpha=0.9)
+    
+    # Draw sample acoustic paths
+    for i, speaker_pos in enumerate(speakers[:2]):  # Just show a few paths
+        for j, mic_pos in enumerate(mics[:2]):
+            # Direct path
+            ax.plot3D([speaker_pos[0], mic_pos[0]], 
+                     [speaker_pos[1], mic_pos[1]], 
+                     [speaker_pos[2], mic_pos[2]], 
+                     'gray', alpha=0.3, linestyle='--', linewidth=1)
+            
+            # Reflected path through target
+            ax.plot3D([speaker_pos[0], sample_target[0]], 
+                     [speaker_pos[1], sample_target[1]], 
+                     [speaker_pos[2], sample_target[2]], 
+                     'orange', alpha=0.6, linewidth=2)
+            ax.plot3D([sample_target[0], mic_pos[0]], 
+                     [sample_target[1], mic_pos[1]], 
+                     [sample_target[2], mic_pos[2]], 
+                     'orange', alpha=0.6, linewidth=2)
+    
+    # Set labels and title
+    ax.set_xlabel('X (m)', fontsize=12)
+    ax.set_ylabel('Y (m)', fontsize=12)
+    ax.set_zlabel('Z (m)', fontsize=12)
+    ax.set_title('AMT3D System Architecture\n5.1 Surround Setup with 4-Microphone Array', fontsize=14, pad=20)
+    ax.legend(loc='upper left', bbox_to_anchor=(0, 1))
+    
+    # Set equal aspect ratio and limits
+    ax.set_xlim([0, width])
+    ax.set_ylim([0, length])
+    ax.set_zlim([0, height])
+    
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/system_architecture.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_dir}/system_architecture.pdf", bbox_inches='tight')
+    plt.close()
+
+def generate_geometric_quality_figure(tracker, output_dir):
+    """Generate geometric quality analysis figure"""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # Plot 1: Elevation angles for all speaker-mic pairs
+    speakers = np.array(tracker.speakers)
+    mics = np.array(tracker.mics)
+    
+    elevation_angles = []
+    pair_labels = []
+    x_positions = []
+    
+    x_pos = 0
+    for i, speaker_pos in enumerate(speakers):
+        for j, mic_pos in enumerate(mics):
+            vec = mic_pos - speaker_pos
+            horizontal_dist = np.sqrt(vec[0]**2 + vec[1]**2)
+            elevation_angle = np.degrees(np.arctan2(vec[2], horizontal_dist))
+            
+            elevation_angles.append(elevation_angle)
+            pair_labels.append(f'S{i}→M{j}')
+            x_positions.append(x_pos)
+            x_pos += 1
+    
+    bars = ax1.bar(x_positions, elevation_angles, alpha=0.7, 
+                   color=['red' if ang > 0 else 'blue' for ang in elevation_angles])
+    ax1.set_xlabel('Speaker-Microphone Pairs', fontsize=12)
+    ax1.set_ylabel('Elevation Angle (degrees)', fontsize=12)
+    ax1.set_title('Elevation Angle Diversity\nfor Z-axis Resolution', fontsize=14)
+    ax1.set_xticks(x_positions[::2])  # Show every other label to avoid crowding
+    ax1.set_xticklabels(pair_labels[::2], rotation=45)
+    ax1.grid(True, alpha=0.3)
+    ax1.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+    
+    # Add statistics text
+    std_dev = np.std(elevation_angles)
+    mean_angle = np.mean(elevation_angles)
+    quality_metric = std_dev * 10
+    
+    stats_text = f'Mean: {mean_angle:.1f}°\nStd Dev: {std_dev:.1f}°\nQuality: {quality_metric:.1f}'
+    ax1.text(0.02, 0.98, stats_text, transform=ax1.transAxes, 
+             verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    
+    # Plot 2: 3D visualization of geometric diversity
+    ax2 = fig.add_subplot(122, projection='3d')
+    
+    # Plot speakers and mics
+    ax2.scatter(speakers[:, 0], speakers[:, 1], speakers[:, 2], 
+               c='red', s=100, marker='^', label='Speakers', alpha=0.8)
+    ax2.scatter(mics[:, 0], mics[:, 1], mics[:, 2], 
+               c='blue', s=100, marker='o', label='Microphones', alpha=0.8)
+    
+    # Draw lines showing geometric diversity with color coding by elevation
+    from matplotlib import cm
+    norm = plt.Normalize(vmin=min(elevation_angles), vmax=max(elevation_angles))
+    
+    line_idx = 0
+    for i, speaker_pos in enumerate(speakers):
+        for j, mic_pos in enumerate(mics):
+            color = cm.RdYlBu(norm(elevation_angles[line_idx]))
+            ax2.plot3D([speaker_pos[0], mic_pos[0]], 
+                      [speaker_pos[1], mic_pos[1]], 
+                      [speaker_pos[2], mic_pos[2]], 
+                      color=color, alpha=0.6, linewidth=2)
+            line_idx += 1
+    
+    ax2.set_xlabel('X (m)')
+    ax2.set_ylabel('Y (m)')
+    ax2.set_zlabel('Z (m)')
+    ax2.set_title('Geometric Baseline Diversity\n(Color = Elevation Angle)', fontsize=14)
+    ax2.legend()
+    
+    # Add colorbar
+    sm = plt.cm.ScalarMappable(cmap=cm.RdYlBu, norm=norm)
+    sm.set_array([])
+    cbar = plt.colorbar(sm, ax=ax2, shrink=0.6)
+    cbar.set_label('Elevation Angle (°)')
+    
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/geometric_quality.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_dir}/geometric_quality.pdf", bbox_inches='tight')
+    plt.close()
+
+def generate_tracking_performance_figure(tracker, output_dir):
+    """Generate 3D tracking performance comparison figure"""
+    # Run multiple simulations to gather statistics
+    n_runs = 10
+    duration = 5.0
+    steps = 25
+    
+    x_errors = []
+    y_errors = []
+    z_errors = []
+    overall_errors = []
+    
+    print("Running tracking performance analysis...")
+    
+    for run in range(n_runs):
+        # Reset tracker
+        tracker.targets = []
+        tracker.tracking_data = {}
+        tracker.kalman_filters = {}
+        
+        # Add a target with random movement
+        start_pos = [
+            1.0 + np.random.uniform(-0.5, 0.5),
+            2.0 + np.random.uniform(-0.5, 0.5),
+            1.2 + np.random.uniform(-0.2, 0.2)
+        ]
+        velocity = [
+            np.random.uniform(-0.3, 0.3),
+            np.random.uniform(-0.3, 0.3),
+            np.random.uniform(-0.1, 0.1)
+        ]
+        
+        tracker.add_target(position=start_pos, velocity=velocity, name=f"Target_Run_{run}")
+        
+        # Run tracking simulation
+        dt = duration / steps
+        for step in range(steps):
+            tracker.update_targets(dt)
+            received_signals = tracker.simulate_echoes(noise_snr=20)
+            echo_data = tracker.detect_echoes(received_signals)
+            estimated_positions = tracker.locate_targets(echo_data)
+            
+            if estimated_positions:
+                for target_id, est_pos in estimated_positions.items():
+                    if target_id in tracker.kalman_filters:
+                        kf = tracker.kalman_filters[target_id]
+                        kf.predict()
+                        kf.update(est_pos)
+                        
+                        # Store filtered position
+                        tracker.tracking_data[target_id]['estimated_positions'].append(est_pos.copy())
+                        tracker.tracking_data[target_id]['filtered_positions'].append(kf.x[:3].copy())
+        
+        # Calculate errors for this run
+        if len(tracker.tracking_data) > 0:
+            target_id = 0
+            true_positions = np.array(tracker.tracking_data[target_id]['true_positions'])
+            estimated_positions = np.array(tracker.tracking_data[target_id]['filtered_positions'])
+            
+            if len(estimated_positions) > 0:
+                # Align arrays
+                min_len = min(len(true_positions), len(estimated_positions))
+                true_pos = true_positions[:min_len]
+                est_pos = estimated_positions[:min_len]
+                
+                # Calculate per-axis errors
+                errors = np.abs(est_pos - true_pos)
+                x_errors.extend(errors[:, 0])
+                y_errors.extend(errors[:, 1])
+                z_errors.extend(errors[:, 2])
+                
+                # Calculate overall 3D errors
+                overall_error = np.linalg.norm(errors, axis=1)
+                overall_errors.extend(overall_error)
+    
+    # Create performance comparison figure
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
+    
+    # Error distributions by axis
+    ax1.hist([x_errors, y_errors, z_errors], bins=20, alpha=0.7, 
+             label=['X-axis', 'Y-axis', 'Z-axis'], color=['red', 'green', 'blue'])
+    ax1.set_xlabel('Tracking Error (m)', fontsize=12)
+    ax1.set_ylabel('Frequency', fontsize=12)
+    ax1.set_title('Tracking Error Distribution by Axis', fontsize=14)
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Box plot comparison
+    error_data = [x_errors, y_errors, z_errors]
+    bp = ax2.boxplot(error_data, labels=['X', 'Y', 'Z'], patch_artist=True)
+    colors = ['lightcoral', 'lightgreen', 'lightblue']
+    for patch, color in zip(bp['boxes'], colors):
+        patch.set_facecolor(color)
+    
+    ax2.set_ylabel('Tracking Error (m)', fontsize=12)
+    ax2.set_title('Error Statistics by Axis', fontsize=14)
+    ax2.grid(True, alpha=0.3)
+    
+    # Add statistics text
+    stats_text = f'X: μ={np.mean(x_errors):.3f}m, σ={np.std(x_errors):.3f}m\n'
+    stats_text += f'Y: μ={np.mean(y_errors):.3f}m, σ={np.std(y_errors):.3f}m\n'
+    stats_text += f'Z: μ={np.mean(z_errors):.3f}m, σ={np.std(z_errors):.3f}m'
+    
+    ax2.text(0.02, 0.98, stats_text, transform=ax2.transAxes, 
+             verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    
+    # Overall 3D error distribution
+    ax3.hist(overall_errors, bins=25, alpha=0.7, color='purple', edgecolor='black')
+    ax3.set_xlabel('3D Tracking Error (m)', fontsize=12)
+    ax3.set_ylabel('Frequency', fontsize=12)
+    ax3.set_title('Overall 3D Tracking Error Distribution', fontsize=14)
+    ax3.grid(True, alpha=0.3)
+    
+    # Add vertical lines for percentiles
+    percentiles = [50, 90, 95]
+    for p in percentiles:
+        val = np.percentile(overall_errors, p)
+        ax3.axvline(val, color='red', linestyle='--', alpha=0.8)
+        ax3.text(val, ax3.get_ylim()[1]*0.9, f'{p}th: {val:.3f}m', 
+                rotation=90, verticalalignment='top')
+    
+    # Accuracy comparison bar chart
+    mean_errors = [np.mean(x_errors), np.mean(y_errors), np.mean(z_errors), np.mean(overall_errors)]
+    std_errors = [np.std(x_errors), np.std(y_errors), np.std(z_errors), np.std(overall_errors)]
+    
+    x_pos = np.arange(len(mean_errors))
+    bars = ax4.bar(x_pos, mean_errors, yerr=std_errors, capsize=5, alpha=0.7,
+                   color=['red', 'green', 'blue', 'purple'])
+    ax4.set_xticks(x_pos)
+    ax4.set_xticklabels(['X-axis', 'Y-axis', 'Z-axis', '3D Overall'])
+    ax4.set_ylabel('Mean Tracking Error (m)', fontsize=12)
+    ax4.set_title('Mean Tracking Accuracy Comparison', fontsize=14)
+    ax4.grid(True, alpha=0.3)
+    
+    # Add value labels on bars
+    for i, (bar, mean_val, std_val) in enumerate(zip(bars, mean_errors, std_errors)):
+        ax4.text(bar.get_x() + bar.get_width()/2., bar.get_height() + std_val + 0.001,
+                f'{mean_val:.3f}', ha='center', va='bottom', fontsize=10)
+    
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/tracking_performance.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_dir}/tracking_performance.pdf", bbox_inches='tight')
+    plt.close()
+
+def generate_ellipsoid_intersection_figure(tracker, output_dir):
+    """Generate ellipsoid intersection visualization"""
+    # Set up a target position for demonstration
+    target_pos = np.array([2.5, 3.0, 1.2])
+    
+    # Calculate path lengths from target to each speaker-mic pair
+    ellipsoids = []
+    speakers = np.array(tracker.speakers)
+    mics = np.array(tracker.mics)
+    
+    # Use first 3 speaker-mic pairs for cleaner visualization
+    pairs_to_show = [(0, 0), (1, 1), (2, 2)]
+    
+    for s_idx, m_idx in pairs_to_show:
+        speaker_pos = speakers[s_idx]
+        mic_pos = mics[m_idx]
+        
+        # Calculate actual path length through target
+        path_length = np.linalg.norm(target_pos - speaker_pos) + np.linalg.norm(target_pos - mic_pos)
+        
+        ellipsoids.append({
+            'speaker_pos': speaker_pos,
+            'mic_pos': mic_pos,
+            'path_length': path_length,
+            'speaker_idx': s_idx,
+            'mic_idx': m_idx
+        })
+    
+    # Create 3D visualization
+    fig = plt.figure(figsize=(15, 5))
+    
+    # 3D view
+    ax1 = fig.add_subplot(131, projection='3d')
+    
+    # Plot speakers and mics
+    ax1.scatter(speakers[:, 0], speakers[:, 1], speakers[:, 2], 
+               c='red', s=100, marker='^', label='Speakers', alpha=0.8)
+    ax1.scatter(mics[:, 0], mics[:, 1], mics[:, 2], 
+               c='blue', s=100, marker='o', label='Microphones', alpha=0.8)
+    
+    # Plot target
+    ax1.scatter(*target_pos, c='green', s=200, marker='*', label='Target', alpha=0.9)
+    
+    # Draw ellipsoids (simplified as ellipses at different orientations)
+    colors = ['orange', 'purple', 'brown']
+    for i, (ellipsoid, color) in enumerate(zip(ellipsoids, colors)):
+        speaker_pos = ellipsoid['speaker_pos']
+        mic_pos = ellipsoid['mic_pos']
+        
+        # Draw the acoustic path
+        ax1.plot3D([speaker_pos[0], target_pos[0]], 
+                  [speaker_pos[1], target_pos[1]], 
+                  [speaker_pos[2], target_pos[2]], 
+                  color=color, linewidth=3, alpha=0.8)
+        ax1.plot3D([target_pos[0], mic_pos[0]], 
+                  [target_pos[1], mic_pos[1]], 
+                  [target_pos[2], mic_pos[2]], 
+                  color=color, linewidth=3, alpha=0.8)
+        
+        # Draw line between foci
+        ax1.plot3D([speaker_pos[0], mic_pos[0]], 
+                  [speaker_pos[1], mic_pos[1]], 
+                  [speaker_pos[2], mic_pos[2]], 
+                  color=color, linestyle='--', alpha=0.5)
+    
+    ax1.set_xlabel('X (m)')
+    ax1.set_ylabel('Y (m)')
+    ax1.set_zlabel('Z (m)')
+    ax1.set_title('3D Ellipsoid Intersection\n(Acoustic Path Visualization)', fontsize=12)
+    ax1.legend()
+    
+    # Top view (X-Y plane)
+    ax2 = fig.add_subplot(132)
+    
+    # Plot 2D projections of ellipsoids
+    for i, (ellipsoid, color) in enumerate(zip(ellipsoids, colors)):
+        speaker_pos = ellipsoid['speaker_pos']
+        mic_pos = ellipsoid['mic_pos']
+        path_length = ellipsoid['path_length']
+        
+        # Calculate ellipse parameters
+        center = (speaker_pos[:2] + mic_pos[:2]) / 2
+        c = np.linalg.norm(mic_pos[:2] - speaker_pos[:2]) / 2
+        a = path_length / 2
+        
+        if a > c:  # Valid ellipse
+            b = np.sqrt(a**2 - c**2)
+            
+            # Calculate rotation angle
+            dx = mic_pos[0] - speaker_pos[0]
+            dy = mic_pos[1] - speaker_pos[1]
+            angle = np.arctan2(dy, dx)
+            
+            # Create ellipse
+            from matplotlib.patches import Ellipse
+            ellipse = Ellipse(center, 2*a, 2*b, angle=np.degrees(angle), 
+                            fill=False, edgecolor=color, linewidth=2, alpha=0.7,
+                            label=f'S{ellipsoid["speaker_idx"]}→M{ellipsoid["mic_idx"]}')
+            ax2.add_patch(ellipse)
+    
+    # Plot points
+    ax2.scatter(speakers[:, 0], speakers[:, 1], c='red', s=100, marker='^', alpha=0.8)
+    ax2.scatter(mics[:, 0], mics[:, 1], c='blue', s=100, marker='o', alpha=0.8)
+    ax2.scatter(target_pos[0], target_pos[1], c='green', s=200, marker='*', alpha=0.9)
+    
+    ax2.set_xlabel('X (m)')
+    ax2.set_ylabel('Y (m)')
+    ax2.set_title('Top View (X-Y Plane)\nEllipse Intersections', fontsize=12)
+    ax2.grid(True, alpha=0.3)
+    ax2.legend()
+    ax2.axis('equal')
+    
+    # Side view (X-Z plane)
+    ax3 = fig.add_subplot(133)
+    
+    # Plot 2D projections of ellipsoids in X-Z plane
+    for i, (ellipsoid, color) in enumerate(zip(ellipsoids, colors)):
+        speaker_pos = ellipsoid['speaker_pos']
+        mic_pos = ellipsoid['mic_pos']
+        path_length = ellipsoid['path_length']
+        
+        # Use X-Z coordinates
+        speaker_xz = np.array([speaker_pos[0], speaker_pos[2]])
+        mic_xz = np.array([mic_pos[0], mic_pos[2]])
+        
+        # Calculate ellipse parameters
+        center = (speaker_xz + mic_xz) / 2
+        c = np.linalg.norm(mic_xz - speaker_xz) / 2
+        a = path_length / 2
+        
+        if a > c:  # Valid ellipse
+            b = np.sqrt(a**2 - c**2)
+            
+            # Calculate rotation angle
+            dx = mic_xz[0] - speaker_xz[0]
+            dz = mic_xz[1] - speaker_xz[1]
+            angle = np.arctan2(dz, dx)
+            
+            # Create ellipse
+            ellipse = Ellipse(center, 2*a, 2*b, angle=np.degrees(angle), 
+                            fill=False, edgecolor=color, linewidth=2, alpha=0.7)
+            ax3.add_patch(ellipse)
+    
+    # Plot points
+    ax3.scatter(speakers[:, 0], speakers[:, 2], c='red', s=100, marker='^', alpha=0.8)
+    ax3.scatter(mics[:, 0], mics[:, 2], c='blue', s=100, marker='o', alpha=0.8)
+    ax3.scatter(target_pos[0], target_pos[2], c='green', s=200, marker='*', alpha=0.9)
+    
+    ax3.set_xlabel('X (m)')
+    ax3.set_ylabel('Z (m)')
+    ax3.set_title('Side View (X-Z Plane)\nVertical Resolution Challenge', fontsize=12)
+    ax3.grid(True, alpha=0.3)
+    ax3.axis('equal')
+    
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/ellipsoid_intersection.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_dir}/ellipsoid_intersection.pdf", bbox_inches='tight')
+    plt.close()
+
+def generate_movement_pattern_results(tracker, output_dir):
+    """Generate movement pattern tracking results"""
+    patterns = {
+        'linear': {'description': 'Linear 3D Movement', 'color': 'blue'},
+        'circular': {'description': 'Circular Horizontal + Vertical Oscillation', 'color': 'red'},
+        'zigzag': {'description': 'Zigzag 3D Pattern', 'color': 'green'}
+    }
+    
+    fig = plt.figure(figsize=(18, 12))
+    
+    pattern_idx = 0
+    for pattern_name, pattern_info in patterns.items():
+        # Reset tracker
+        tracker.targets = []
+        tracker.tracking_data = {}
+        tracker.kalman_filters = {}
+        
+        # Set up movement pattern
+        if pattern_name == 'linear':
+            start_pos = [1.0, 1.0, 1.0]
+            velocity = [0.3, 0.2, 0.1]
+        elif pattern_name == 'circular':
+            start_pos = [2.5, 3.0, 1.2]
+            # Circular movement will be handled in update function
+            velocity = [0.0, 0.0, 0.0]
+        else:  # zigzag
+            start_pos = [1.0, 1.0, 1.0]
+            velocity = [0.2, 0.3, 0.15]
+        
+        tracker.add_target(position=start_pos, velocity=velocity, name=f"Target_{pattern_name}")
+        
+        # Simulate movement and tracking
+        duration = 8.0
+        steps = 40
+        dt = duration / steps
+        
+        if pattern_name == 'circular':
+            # Override with circular movement
+            def circular_update(dt_val):
+                for target in tracker.targets:
+                    t = len(target['history']) * dt_val
+                    # Circular motion in X-Y plane with Z oscillation
+                    center = np.array([2.5, 3.0, 1.2])
+                    radius = 1.0
+                    new_pos = center + np.array([
+                        radius * np.cos(t * 0.5),
+                        radius * np.sin(t * 0.5),
+                        0.3 * np.sin(t * 1.5)  # Vertical oscillation
+                    ])
+                    target['position'] = new_pos
+                    target['history'].append(new_pos.copy())
+                    tracker.tracking_data[target['id']]['true_positions'].append(new_pos.copy())
+            
+            tracker.update_targets = circular_update
+        
+        elif pattern_name == 'zigzag':
+            # Override with zigzag movement
+            def zigzag_update(dt_val):
+                for target in tracker.targets:
+                    t = len(target['history']) * dt_val
+                    # Zigzag pattern
+                    base_velocity = np.array([0.2, 0.3, 0.1])
+                    # Add zigzag components
+                    zigzag_vel = base_velocity + np.array([
+                        0.2 * np.sin(t * 2.0),    # X zigzag
+                        0.15 * np.cos(t * 1.5),   # Y zigzag  
+                        0.1 * np.sin(t * 3.0)     # Z zigzag
+                    ])
+                    new_pos = target['position'] + zigzag_vel * dt_val
+                    
+                    # Boundary checks
+                    new_pos = np.clip(new_pos, [0.5, 0.5, 0.3], [4.5, 5.5, 2.1])
+                    
+                    target['position'] = new_pos
+                    target['history'].append(new_pos.copy())
+                    tracker.tracking_data[target['id']]['true_positions'].append(new_pos.copy())
+            
+            tracker.update_targets = zigzag_update
+        
+        # Run simulation
+        for step in range(steps):
+            tracker.update_targets(dt)
+            received_signals = tracker.simulate_echoes(noise_snr=25)
+            echo_data = tracker.detect_echoes(received_signals)
+            estimated_positions = tracker.locate_targets(echo_data)
+            
+            if estimated_positions:
+                for target_id, est_pos in estimated_positions.items():
+                    if target_id in tracker.kalman_filters:
+                        kf = tracker.kalman_filters[target_id]
+                        kf.predict()
+                        kf.update(est_pos)
+                        
+                        tracker.tracking_data[target_id]['estimated_positions'].append(est_pos.copy())
+                        tracker.tracking_data[target_id]['filtered_positions'].append(kf.x[:3].copy())
+        
+        # Plot results for this pattern
+        if len(tracker.tracking_data) > 0:
+            target_id = 0
+            true_positions = np.array(tracker.tracking_data[target_id]['true_positions'])
+            if len(tracker.tracking_data[target_id]['filtered_positions']) > 0:
+                estimated_positions = np.array(tracker.tracking_data[target_id]['filtered_positions'])
+                
+                # Align arrays
+                min_len = min(len(true_positions), len(estimated_positions))
+                true_pos = true_positions[:min_len]
+                est_pos = estimated_positions[:min_len]
+                
+                # 3D trajectory plot
+                ax_3d = fig.add_subplot(3, 3, pattern_idx * 3 + 1, projection='3d')
+                ax_3d.plot(true_pos[:, 0], true_pos[:, 1], true_pos[:, 2], 
+                          'o-', color=pattern_info['color'], linewidth=2, markersize=4, 
+                          label='True Path', alpha=0.8)
+                ax_3d.plot(est_pos[:, 0], est_pos[:, 1], est_pos[:, 2], 
+                          's--', color='red', linewidth=2, markersize=3, 
+                          label='Estimated Path', alpha=0.8)
+                
+                ax_3d.set_xlabel('X (m)')
+                ax_3d.set_ylabel('Y (m)')
+                ax_3d.set_zlabel('Z (m)')
+                ax_3d.set_title(f'{pattern_info["description"]}\n3D Trajectory', fontsize=11)
+                ax_3d.legend()
+                
+                # Error over time
+                ax_error = fig.add_subplot(3, 3, pattern_idx * 3 + 2)
+                errors = np.linalg.norm(est_pos - true_pos, axis=1)
+                time_steps = np.arange(len(errors)) * dt
+                
+                ax_error.plot(time_steps, errors, 'o-', color=pattern_info['color'], 
+                             linewidth=2, markersize=4)
+                ax_error.set_xlabel('Time (s)')
+                ax_error.set_ylabel('3D Error (m)')
+                ax_error.set_title(f'Tracking Error Over Time\nMean: {np.mean(errors):.3f}m', fontsize=11)
+                ax_error.grid(True, alpha=0.3)
+                
+                # Per-axis error comparison
+                ax_axes = fig.add_subplot(3, 3, pattern_idx * 3 + 3)
+                axis_errors = np.abs(est_pos - true_pos)
+                mean_axis_errors = np.mean(axis_errors, axis=0)
+                
+                bars = ax_axes.bar(['X', 'Y', 'Z'], mean_axis_errors, 
+                                 color=['red', 'green', 'blue'], alpha=0.7)
+                ax_axes.set_ylabel('Mean Error (m)')
+                ax_axes.set_title('Per-Axis Error Comparison', fontsize=11)
+                ax_axes.grid(True, alpha=0.3)
+                
+                # Add value labels on bars
+                for bar, val in zip(bars, mean_axis_errors):
+                    ax_axes.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 0.001,
+                                f'{val:.3f}', ha='center', va='bottom', fontsize=9)
+        
+        pattern_idx += 1
+    
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/movement_patterns.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_dir}/movement_patterns.pdf", bbox_inches='tight')
+    plt.close()
+
+def generate_snr_accuracy_analysis(tracker, output_dir):
+    """Generate SNR vs accuracy analysis"""
+    snr_levels = [5, 10, 15, 20, 25, 30, 35]
+    n_runs_per_snr = 5
+    
+    snr_results = {snr: {'x_errors': [], 'y_errors': [], 'z_errors': [], 'overall_errors': []} 
+                   for snr in snr_levels}
+    
+    print("Running SNR analysis...")
+    
+    for snr in snr_levels:
+        print(f"  Testing SNR: {snr} dB")
+        
+        for run in range(n_runs_per_snr):
+            # Reset tracker
+            tracker.targets = []
+            tracker.tracking_data = {}
+            tracker.kalman_filters = {}
+            
+            # Add target
+            tracker.add_target(position=[2.0, 2.5, 1.2], velocity=[0.1, 0.15, 0.05])
+            
+            # Run simulation
+            duration = 4.0
+            steps = 20
+            dt = duration / steps
+            
+            for step in range(steps):
+                tracker.update_targets(dt)
+                received_signals = tracker.simulate_echoes(noise_snr=snr)
+                echo_data = tracker.detect_echoes(received_signals)
+                estimated_positions = tracker.locate_targets(echo_data)
+                
+                if estimated_positions:
+                    for target_id, est_pos in estimated_positions.items():
+                        if target_id in tracker.kalman_filters:
+                            kf = tracker.kalman_filters[target_id]
+                            kf.predict()
+                            kf.update(est_pos)
+                            
+                            tracker.tracking_data[target_id]['estimated_positions'].append(est_pos.copy())
+                            tracker.tracking_data[target_id]['filtered_positions'].append(kf.x[:3].copy())
+            
+            # Calculate errors
+            if len(tracker.tracking_data) > 0:
+                target_id = 0
+                true_positions = np.array(tracker.tracking_data[target_id]['true_positions'])
+                if len(tracker.tracking_data[target_id]['filtered_positions']) > 0:
+                    estimated_positions = np.array(tracker.tracking_data[target_id]['filtered_positions'])
+                    
+                    min_len = min(len(true_positions), len(estimated_positions))
+                    true_pos = true_positions[:min_len]
+                    est_pos = estimated_positions[:min_len]
+                    
+                    errors = np.abs(est_pos - true_pos)
+                    snr_results[snr]['x_errors'].extend(errors[:, 0])
+                    snr_results[snr]['y_errors'].extend(errors[:, 1])
+                    snr_results[snr]['z_errors'].extend(errors[:, 2])
+                    
+                    overall_errors = np.linalg.norm(errors, axis=1)
+                    snr_results[snr]['overall_errors'].extend(overall_errors)
+    
+    # Create analysis plots
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
+    
+    # Plot 1: Mean error vs SNR
+    mean_x_errors = [np.mean(snr_results[snr]['x_errors']) if snr_results[snr]['x_errors'] else 0 for snr in snr_levels]
+    mean_y_errors = [np.mean(snr_results[snr]['y_errors']) if snr_results[snr]['y_errors'] else 0 for snr in snr_levels]
+    mean_z_errors = [np.mean(snr_results[snr]['z_errors']) if snr_results[snr]['z_errors'] else 0 for snr in snr_levels]
+    mean_overall_errors = [np.mean(snr_results[snr]['overall_errors']) if snr_results[snr]['overall_errors'] else 0 for snr in snr_levels]
+    
+    ax1.plot(snr_levels, mean_x_errors, 'o-', label='X-axis', linewidth=2, markersize=6)
+    ax1.plot(snr_levels, mean_y_errors, 's-', label='Y-axis', linewidth=2, markersize=6)
+    ax1.plot(snr_levels, mean_z_errors, '^-', label='Z-axis', linewidth=2, markersize=6)
+    ax1.plot(snr_levels, mean_overall_errors, 'd-', label='3D Overall', linewidth=2, markersize=6)
+    
+    ax1.set_xlabel('SNR (dB)', fontsize=12)
+    ax1.set_ylabel('Mean Tracking Error (m)', fontsize=12)
+    ax1.set_title('Tracking Accuracy vs Signal-to-Noise Ratio', fontsize=14)
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot 2: Standard deviation vs SNR
+    std_x_errors = [np.std(snr_results[snr]['x_errors']) if snr_results[snr]['x_errors'] else 0 for snr in snr_levels]
+    std_y_errors = [np.std(snr_results[snr]['y_errors']) if snr_results[snr]['y_errors'] else 0 for snr in snr_levels]
+    std_z_errors = [np.std(snr_results[snr]['z_errors']) if snr_results[snr]['z_errors'] else 0 for snr in snr_levels]
+    
+    ax2.plot(snr_levels, std_x_errors, 'o-', label='X-axis', linewidth=2, markersize=6)
+    ax2.plot(snr_levels, std_y_errors, 's-', label='Y-axis', linewidth=2, markersize=6)
+    ax2.plot(snr_levels, std_z_errors, '^-', label='Z-axis', linewidth=2, markersize=6)
+    
+    ax2.set_xlabel('SNR (dB)', fontsize=12)
+    ax2.set_ylabel('Error Standard Deviation (m)', fontsize=12)
+    ax2.set_title('Tracking Precision vs SNR', fontsize=14)
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    # Plot 3: Error distribution at different SNR levels
+    selected_snrs = [10, 20, 30]
+    colors = ['red', 'blue', 'green']
+    
+    for i, (snr, color) in enumerate(zip(selected_snrs, colors)):
+        if snr_results[snr]['overall_errors']:
+            ax3.hist(snr_results[snr]['overall_errors'], bins=15, alpha=0.6, 
+                    label=f'SNR = {snr} dB', color=color, density=True)
+    
+    ax3.set_xlabel('3D Tracking Error (m)', fontsize=12)
+    ax3.set_ylabel('Probability Density', fontsize=12)
+    ax3.set_title('Error Distribution at Different SNR Levels', fontsize=14)
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+    
+    # Plot 4: Z-axis sensitivity analysis
+    z_error_ratios = []
+    for snr in snr_levels:
+        if snr_results[snr]['z_errors'] and snr_results[snr]['x_errors']:
+            z_mean = np.mean(snr_results[snr]['z_errors'])
+            x_mean = np.mean(snr_results[snr]['x_errors'])
+            ratio = z_mean / x_mean if x_mean > 0 else 0
+            z_error_ratios.append(ratio)
+        else:
+            z_error_ratios.append(0)
+    
+    ax4.plot(snr_levels, z_error_ratios, 'ro-', linewidth=2, markersize=6)
+    ax4.set_xlabel('SNR (dB)', fontsize=12)
+    ax4.set_ylabel('Z-axis / X-axis Error Ratio', fontsize=12)
+    ax4.set_title('Relative Z-axis Performance vs SNR', fontsize=14)
+    ax4.grid(True, alpha=0.3)
+    ax4.axhline(y=1, color='black', linestyle='--', alpha=0.5, label='Equal Performance')
+    ax4.legend()
+    
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/snr_accuracy_analysis.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_dir}/snr_accuracy_analysis.pdf", bbox_inches='tight')
+    plt.close()
+
+def generate_2d_vs_3d_comparison(tracker, output_dir):
+    """Generate 2D vs 3D comparison figure"""
+    fig = plt.figure(figsize=(18, 10))
+    
+    # Simulate 2D tracking (constraining Z to a fixed value)
+    print("Simulating 2D tracking...")
+    tracker_2d = AcousticTracker(room_dim=(5.0, 6.0, 2.4), debug_mode=False)
+    
+    # Add target for 2D simulation (fixed Z)
+    tracker_2d.add_target(position=[2.0, 2.5, 1.2], velocity=[0.2, 0.15, 0.0])  # No Z movement
+    
+    # Run 2D simulation
+    duration = 6.0
+    steps = 30
+    dt = duration / steps
+    
+    for step in range(steps):
+        tracker_2d.update_targets(dt)
+        received_signals = tracker_2d.simulate_echoes(noise_snr=25)
+        echo_data = tracker_2d.detect_echoes(received_signals)
+        estimated_positions = tracker_2d.locate_targets(echo_data)
+        
+        if estimated_positions:
+            for target_id, est_pos in estimated_positions.items():
+                # Force Z to be constant for 2D simulation
+                est_pos[2] = 1.2
+                
+                if target_id in tracker_2d.kalman_filters:
+                    kf = tracker_2d.kalman_filters[target_id]
+                    kf.predict()
+                    kf.update(est_pos)
+                    
+                    tracker_2d.tracking_data[target_id]['estimated_positions'].append(est_pos.copy())
+                    tracker_2d.tracking_data[target_id]['filtered_positions'].append(kf.x[:3].copy())
+    
+    # Simulate 3D tracking
+    print("Simulating 3D tracking...")
+    tracker_3d = AcousticTracker(room_dim=(5.0, 6.0, 2.4), debug_mode=False)
+    tracker_3d.add_target(position=[2.0, 2.5, 1.2], velocity=[0.2, 0.15, 0.1])  # With Z movement
+    
+    for step in range(steps):
+        tracker_3d.update_targets(dt)
+        received_signals = tracker_3d.simulate_echoes(noise_snr=25)
+        echo_data = tracker_3d.detect_echoes(received_signals)
+        estimated_positions = tracker_3d.locate_targets(echo_data)
+        
+        if estimated_positions:
+            for target_id, est_pos in estimated_positions.items():
+                if target_id in tracker_3d.kalman_filters:
+                    kf = tracker_3d.kalman_filters[target_id]
+                    kf.predict()
+                    kf.update(est_pos)
+                    
+                    tracker_3d.tracking_data[target_id]['estimated_positions'].append(est_pos.copy())
+                    tracker_3d.tracking_data[target_id]['filtered_positions'].append(kf.x[:3].copy())
+    
+    # Extract data for comparison
+    def extract_tracking_data(tracker, label):
+        if len(tracker.tracking_data) > 0:
+            target_id = 0
+            true_positions = np.array(tracker.tracking_data[target_id]['true_positions'])
+            if len(tracker.tracking_data[target_id]['filtered_positions']) > 0:
+                estimated_positions = np.array(tracker.tracking_data[target_id]['filtered_positions'])
+                
+                min_len = min(len(true_positions), len(estimated_positions))
+                true_pos = true_positions[:min_len]
+                est_pos = estimated_positions[:min_len]
+                
+                errors = np.abs(est_pos - true_pos)
+                return true_pos, est_pos, errors
+        return None, None, None
+    
+    true_2d, est_2d, errors_2d = extract_tracking_data(tracker_2d, "2D")
+    true_3d, est_3d, errors_3d = extract_tracking_data(tracker_3d, "3D")
+    
+    if true_2d is not None and true_3d is not None:
+        # Plot 1: Trajectories comparison
+        ax1 = fig.add_subplot(2, 4, 1, projection='3d')
+        ax1.plot(true_2d[:, 0], true_2d[:, 1], true_2d[:, 2], 'o-', color='blue', 
+                label='True 2D', linewidth=2, markersize=4)
+        ax1.plot(est_2d[:, 0], est_2d[:, 1], est_2d[:, 2], 's--', color='red', 
+                label='Est 2D', linewidth=2, markersize=3)
+        ax1.set_title('2D Tracking\n(Z constrained)', fontsize=12)
+        ax1.set_xlabel('X (m)')
+        ax1.set_ylabel('Y (m)')
+        ax1.set_zlabel('Z (m)')
+        ax1.legend()
+        
+        ax2 = fig.add_subplot(2, 4, 2, projection='3d')
+        ax2.plot(true_3d[:, 0], true_3d[:, 1], true_3d[:, 2], 'o-', color='green', 
+                label='True 3D', linewidth=2, markersize=4)
+        ax2.plot(est_3d[:, 0], est_3d[:, 1], est_3d[:, 2], 's--', color='red', 
+                label='Est 3D', linewidth=2, markersize=3)
+        ax2.set_title('3D Tracking\n(Full 3D movement)', fontsize=12)
+        ax2.set_xlabel('X (m)')
+        ax2.set_ylabel('Y (m)')
+        ax2.set_zlabel('Z (m)')
+        ax2.legend()
+        
+        # Plot 3: Error comparison over time
+        ax3 = fig.add_subplot(2, 4, 3)
+        time_steps = np.arange(len(errors_2d)) * dt
+        
+        error_2d_total = np.linalg.norm(errors_2d, axis=1)
+        error_3d_total = np.linalg.norm(errors_3d[:len(errors_2d)], axis=1)
+        
+        ax3.plot(time_steps, error_2d_total, 'o-', color='blue', label='2D Tracking', linewidth=2)
+        ax3.plot(time_steps, error_3d_total, 's-', color='green', label='3D Tracking', linewidth=2)
+        ax3.set_xlabel('Time (s)')
+        ax3.set_ylabel('3D Error (m)')
+        ax3.set_title('Tracking Error Over Time', fontsize=12)
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+        
+        # Plot 4: Per-axis error comparison
+        ax4 = fig.add_subplot(2, 4, 4)
+        
+        mean_errors_2d = np.mean(errors_2d, axis=0)
+        mean_errors_3d = np.mean(errors_3d[:len(errors_2d)], axis=0)
+        
+        x_pos = np.arange(3)
+        width = 0.35
+        
+        bars1 = ax4.bar(x_pos - width/2, mean_errors_2d, width, label='2D Mode', color='blue', alpha=0.7)
+        bars2 = ax4.bar(x_pos + width/2, mean_errors_3d, width, label='3D Mode', color='green', alpha=0.7)
+        
+        ax4.set_xlabel('Axis')
+        ax4.set_ylabel('Mean Error (m)')
+        ax4.set_title('Per-Axis Error Comparison', fontsize=12)
+        ax4.set_xticks(x_pos)
+        ax4.set_xticklabels(['X', 'Y', 'Z'])
+        ax4.legend()
+        ax4.grid(True, alpha=0.3)
+        
+        # Add value labels on bars
+        for bars in [bars1, bars2]:
+            for bar in bars:
+                height = bar.get_height()
+                ax4.text(bar.get_x() + bar.get_width()/2., height + 0.001,
+                        f'{height:.3f}', ha='center', va='bottom', fontsize=9)
+        
+        # Plot 5-8: Detailed analysis
+        
+        # X-Y plane view comparison
+        ax5 = fig.add_subplot(2, 4, 5)
+        ax5.plot(true_2d[:, 0], true_2d[:, 1], 'o-', color='blue', label='True 2D', linewidth=2)
+        ax5.plot(est_2d[:, 0], est_2d[:, 1], 's--', color='lightblue', label='Est 2D', linewidth=2)
+        ax5.plot(true_3d[:, 0], true_3d[:, 1], 'o-', color='green', label='True 3D', linewidth=2)
+        ax5.plot(est_3d[:, 0], est_3d[:, 1], 's--', color='lightgreen', label='Est 3D', linewidth=2)
+        ax5.set_xlabel('X (m)')
+        ax5.set_ylabel('Y (m)')
+        ax5.set_title('X-Y Plane Comparison', fontsize=12)
+        ax5.legend()
+        ax5.grid(True, alpha=0.3)
+        ax5.axis('equal')
+        
+        # Z-axis movement comparison
+        ax6 = fig.add_subplot(2, 4, 6)
+        ax6.plot(time_steps, true_2d[:, 2], 'o-', color='blue', label='True 2D (Z)', linewidth=2)
+        ax6.plot(time_steps, est_2d[:, 2], 's--', color='lightblue', label='Est 2D (Z)', linewidth=2)
+        ax6.plot(time_steps, true_3d[:len(time_steps), 2], 'o-', color='green', label='True 3D (Z)', linewidth=2)
+        ax6.plot(time_steps, est_3d[:len(time_steps), 2], 's--', color='lightgreen', label='Est 3D (Z)', linewidth=2)
+        ax6.set_xlabel('Time (s)')
+        ax6.set_ylabel('Z Position (m)')
+        ax6.set_title('Z-axis Tracking Comparison', fontsize=12)
+        ax6.legend()
+        ax6.grid(True, alpha=0.3)
+        
+        # Computational complexity comparison (simulated)
+        ax7 = fig.add_subplot(2, 4, 7)
+        complexity_metrics = ['State Dim', 'Intersections', 'Processing Time']
+        complexity_2d = [6, 1, 1.0]  # Relative values
+        complexity_3d = [9, 3, 3.5]  # Relative values
+        
+        x_pos = np.arange(len(complexity_metrics))
+        bars1 = ax7.bar(x_pos - width/2, complexity_2d, width, label='2D Mode', color='blue', alpha=0.7)
+        bars2 = ax7.bar(x_pos + width/2, complexity_3d, width, label='3D Mode', color='green', alpha=0.7)
+        
+        ax7.set_xlabel('Metric')
+        ax7.set_ylabel('Relative Complexity')
+        ax7.set_title('Computational Complexity', fontsize=12)
+        ax7.set_xticks(x_pos)
+        ax7.set_xticklabels(complexity_metrics)
+        ax7.legend()
+        ax7.grid(True, alpha=0.3)
+        
+        # Performance summary
+        ax8 = fig.add_subplot(2, 4, 8)
+        
+        # Calculate summary statistics
+        stats_2d = {
+            'Mean Error': np.mean(error_2d_total),
+            'Std Error': np.std(error_2d_total),
+            'Max Error': np.max(error_2d_total),
+            '90th Percentile': np.percentile(error_2d_total, 90)
+        }
+        
+        stats_3d = {
+            'Mean Error': np.mean(error_3d_total),
+            'Std Error': np.std(error_3d_total),
+            'Max Error': np.max(error_3d_total),
+            '90th Percentile': np.percentile(error_3d_total, 90)
+        }
+        
+        metrics = list(stats_2d.keys())
+        values_2d = list(stats_2d.values())
+        values_3d = list(stats_3d.values())
+        
+        x_pos = np.arange(len(metrics))
+        bars1 = ax8.bar(x_pos - width/2, values_2d, width, label='2D Mode', color='blue', alpha=0.7)
+        bars2 = ax8.bar(x_pos + width/2, values_3d, width, label='3D Mode', color='green', alpha=0.7)
+        
+        ax8.set_xlabel('Performance Metric')
+        ax8.set_ylabel('Error (m)')
+        ax8.set_title('Performance Summary', fontsize=12)
+        ax8.set_xticks(x_pos)
+        ax8.set_xticklabels(metrics, rotation=45)
+        ax8.legend()
+        ax8.grid(True, alpha=0.3)
+        
+        # Add value labels on bars
+        for bars in [bars1, bars2]:
+            for bar in bars:
+                height = bar.get_height()
+                ax8.text(bar.get_x() + bar.get_width()/2., height + 0.001,
+                        f'{height:.3f}', ha='center', va='bottom', fontsize=8, rotation=90)
+    
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/2d_vs_3d_comparison.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_dir}/2d_vs_3d_comparison.pdf", bbox_inches='tight')
+    plt.close()
+
 def main():
     """
     Main function to demonstrate the AMT3D system
@@ -3982,8 +5456,9 @@ def main():
     print("1. Run simple demo")
     print("2. Run comprehensive tests")
     print("3. Run position shift analysis")
+    print("4. Generate report figures")
     
-    mode = input("Enter mode (1-3): ")
+    mode = input("Enter mode (1-4): ")
     
     if mode == "1":
         # Simple demo with targets moving in different patterns
@@ -3992,7 +5467,7 @@ def main():
         # Add targets
         tracker.add_target(
             position=[1.0, 1.0, 1.2],
-            velocity=[0.2, 0.2, 0.0],
+            velocity=[0.2, 0.2, 0.1],
             name="Target_1"
         )
         tracker.add_target(
@@ -4002,15 +5477,46 @@ def main():
         )
         
         # Run tracking
-        tracker.run_tracking(duration=10.0, steps=50)
+        tracker.run_tracking(duration=10.0, steps=50, noise_snr=0)
         
         # Visualize results
         fig = tracker.visualize()
-        fig.savefig("amt_demo_results.png", dpi=300)
-        print(f"Demo visualization saved to amt_demo_results.png")
+        fig.savefig("soundbar3_amt_demo_results_0.png", dpi=300)
+        print(f"Demo visualization saved to amt_demo_results_0.png")
         
         # Show visualization
         plt.show()
+
+        # tracker.run_tracking(duration=10.0, steps=50, noise_snr=5)
+        
+        # # Visualize results
+        # fig = tracker.visualize()
+        # fig.savefig("amt_demo_results_5.png", dpi=300)
+        # print(f"Demo visualization saved to amt_demo_results_5.png")
+        
+        # # Show visualization
+        # plt.show()
+
+        # tracker.run_tracking(duration=10.0, steps=50, noise_snr=10)
+        
+        # # Visualize results
+        # fig = tracker.visualize()
+        # fig.savefig("amt_demo_results_10.png", dpi=300)
+        # print(f"Demo visualization saved to amt_demo_results_10.png")
+        
+        # # Show visualization
+        # plt.show()
+
+        
+        # tracker.run_tracking(duration=10.0, steps=50, noise_snr=20)
+        
+        # # Visualize results
+        # fig = tracker.visualize()
+        # fig.savefig("amt_demo_results_20.png", dpi=300)
+        # print(f"Demo visualization saved to amt_demo_results_20.png")
+        
+        # # Show visualization
+        # plt.show()
         
     elif mode == "2":
         # Run comprehensive tests
@@ -4037,6 +5543,13 @@ def main():
             print(f"Consider applying this correction vector to calibrate your system")
         else:
             print("No consistent position shift detected")
+    
+    elif mode == "4":
+        # Generate report figures
+        print("\nGenerating comprehensive figures for research report...")
+        print("This will take several minutes as it runs multiple simulations...")
+        generate_report_figures()
+        print("Report figures generation completed!")
     
     else:
         print("Invalid mode selected. Exiting.")
