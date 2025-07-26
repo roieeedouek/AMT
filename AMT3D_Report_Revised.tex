@@ -30,23 +30,79 @@ Three-Dimensional Extension Study}
 
 \subsection{Background: AMT+ 2D System}
 
-The AMT+ (Acoustic Multi-Target Plus) system \cite{amt_plus} established a foundation for acoustic tracking using smartphone-based MIMO (Multiple-Input Multiple-Output) arrays. The original system operates in 2D space with the following key characteristics:
+The AMT+ (Acoustic Multi-Target Plus) system \cite{amt_plus} established a foundation for acoustic multi-target tracking using smartphone-based MIMO arrays. The original system operates in 2D space and achieved significant advances over previous acoustic tracking approaches.
 
+\subsubsection{AMT+ Signal Foundation}
+
+AMT+ employs Zadoff-Chu (ZC) sequences as the signal foundation, which provides several critical advantages:
+
+{\bf ZC Sequence Properties:}
 \begin{itemize}
-\item {\em 2D State Vector:} Tracks position $(x, y)$, velocity $(v_x, v_y)$, and acceleration $(a_x, a_y)$ in a 6-dimensional state space
-\item {\em Circle Intersection:} Localizes targets by finding intersections of circles defined by acoustic path lengths
-\item {\em Planar Geometry:} Assumes all microphones and targets operate in the same horizontal plane
-\item {\em Kalman Filtering:} Uses linear Kalman filters adapted for 2D motion models
-\item {\em Multi-target Capability:} Simultaneously tracks multiple acoustic sources with target identification
+\item {\em Constant Amplitude:} ZC sequences maintain constant amplitude, optimizing signal power utilization
+\item {\em Zero Auto-correlation:} Perfect auto-correlation properties enable precise timing detection
+\item {\em Weak Cross-correlation:} Different ZC sequences exhibit minimal cross-correlation, enabling source separation
 \end{itemize}
 
-The AMT+ system achieved centimeter-level accuracy in controlled 2D environments by leveraging:
+The ZC sequence is mathematically defined as:
+\begin{equation}
+z[n] = \begin{cases}
+e^{-j2\pi u/N_{zc} \cdot (n(n+1)/2 + qn)} & \text{for } N_{zc} \text{ odd} \\
+e^{-j2\pi u/N_{zc} \cdot (n^2/2 + qn)} & \text{for } N_{zc} \text{ even}
+\end{cases}
+\label{eq:zc_sequence}
+\end{equation}
+
+where $N_{zc}$ is the sequence length, $u$ is a root index with $\gcd(u, N_{zc}) = 1$, and $q$ is an integer parameter.
+
+\subsubsection{AMT+ Algorithm Flow}
+
+The AMT+ system implements a sophisticated 5-stage processing pipeline:
+
+{\bf Stage 1: Source Separation}
+\begin{itemize}
+\item {\em MIMO Signal Processing:} Each microphone receives mixed signals from multiple speakers
+\item {\em Self-Interference Cancellation:} Actively removes interference from other speakers using estimated channel responses
+\item {\em Sliding-Window Correlation:} Exploits ZC sequence properties for signal separation
+\end{itemize}
+
+{\bf Stage 2: Direct Signal Detection}
+\begin{itemize}
+\item {\em Correlation-Based Detection:} Identifies direct path arrival as maximum correlation peak
+\item {\em Phase Offset Correction:} Refines timing using phase analysis to achieve sub-sample accuracy
+\item {\em Time Synchronization:} Establishes precise sender-receiver timing alignment
+\end{itemize}
+
+{\bf Stage 3: Interference Elimination}
+\begin{itemize}
+\item {\em 4th-Order MTI Filter:} Moving Target Indicator filter removes static reflections: $h_{MTI}(n) = \delta(n) - 4\delta(n-N) + 6\delta(n-2N) - 4\delta(n-3N) + \delta(n-4N)$
+\item {\em Adaptive Thresholding:} Dynamic noise floor estimation: $Th = \text{mean}(D) + k \cdot \text{std}(D)$
+\item {\em Consecutive Subtraction:} Removes static object influences
+\end{itemize}
+
+{\bf Stage 4: Primary Echo Detection}
+\begin{itemize}
+\item {\em Non-Particle Target Modeling:} Recognizes targets as extended objects, not point sources
+\item {\em Primary Echo Identification:} Detects the fastest-moving point (e.g., fingertip) among multiple target reflections
+\item {\em Distance Projection Analysis:} Uses unique reflection patterns for target characterization
+\end{itemize}
+
+{\bf Stage 5: Multi-Ellipse Localization}
+\begin{itemize}
+\item {\em Ellipse Construction:} Each speaker-microphone pair creates a ranging ellipse with path length equal to measured echo time
+\item {\em Multi-Target Identification:} Distance projection patterns enable continuous target tracking
+\item {\em 2D Position Estimation:} Intersection of multiple ellipses determines target locations
+\end{itemize}
+
+\subsubsection{AMT+ Performance Achievements}
+
+The original AMT+ system demonstrated exceptional performance in 2D tracking:
 
 \begin{itemize}
-\item {\em Time Difference of Arrival (TDOA):} Precise measurement of acoustic signal arrival times
-\item {\em Echo Cancellation:} Advanced algorithms to separate direct path from multipath reflections
-\item {\em Target Association:} Probabilistic data association for multi-target scenarios
-\item {\em Room Acoustic Modeling:} Compensation for environmental acoustic properties
+\item {\em Single Target:} 0.54 cm average tracking error
+\item {\em Dual Target:} 1.37 cm average tracking error  
+\item {\em Triple Target:} 2.13 cm average tracking error
+\item {\em Gesture Recognition:} 97.0\% classification accuracy for 14 gesture types
+\item {\em Processing Delay:} Less than 80 ms for real-time operation
 \end{itemize}
 
 \subsection{Motivation for 3D Extension}
@@ -141,35 +197,58 @@ The state transition matrix incorporates kinematic equations for constant accele
 
 This expansion from 6D to 9D increases computational complexity but provides the necessary degrees of freedom for full 3D motion modeling.
 
-\subsection{Multi-Ellipsoid Intersection Algorithm}
+\subsection{Two-Stage Multi-Ellipsoid Intersection Algorithm}
 
-{\bf Challenge:} The AMT+ 2D system solves circle intersection problems. In 3D, we must solve ellipsoid intersection problems, which are significantly more complex both geometrically and computationally.
+{\bf Challenge:} The AMT+ 2D system solves ellipse intersection problems in planar space. Extending to 3D requires solving multi-ellipsoid intersection problems, which are significantly more complex both geometrically and computationally, particularly for the vertical dimension where geometric constraints create ambiguities.
 
 {\bf Problem Formulation:} Each speaker-microphone pair contributes an ellipsoid with foci at the speaker and microphone positions. The target localization becomes a multi-ellipsoid intersection optimization problem:
 
 \begin{equation}
-\mathbf{p}^* = \arg\min_{\mathbf{p}} \sum_{i=1}^{N} w_i |\|\mathbf{p} - \mathbf{f}_{i1}\| + \|\mathbf{p} - \mathbf{f}_{i2}\| - L_i|^2
+\mathbf{p}^* = \arg\min_{\mathbf{p}} \sum_{i=1}^{N} |\|\mathbf{p} - \mathbf{f}_{i1}\| + \|\mathbf{p} - \mathbf{f}_{i2}\| - L_i|^2
 \label{eq:ellipsoid_optimization}
 \end{equation}
 
-where $\mathbf{f}_{i1}$ and $\mathbf{f}_{i2}$ are the ellipsoid foci, $L_i$ is the measured path length, and $w_i$ represents confidence weights.
+where $\mathbf{f}_{i1}$ and $\mathbf{f}_{i2}$ are the ellipsoid foci (speaker and microphone positions), and $L_i$ is the measured acoustic path length.
 
 Figure \ref{fig:ellipsoid_intersection} demonstrates the ellipsoid intersection process during active tracking.
 
 \begin{figure}[t]
 \centerline{
 \includegraphics[width=85mm]{final/ellipses_step012.png}}
-\caption{{\it Multi-ellipsoid intersection visualization showing acoustic ellipses converging on target position. Each speaker-microphone pair contributes a constraint ellipse, and the target location is determined through optimization of the intersection problem.}}
+\caption{{\it Multi-ellipsoid intersection visualization showing acoustic ellipses converging on target position. Each speaker-microphone pair contributes a constraint ellipse, and the target location is determined through two-stage optimization of the intersection problem.}}
 \label{fig:ellipsoid_intersection}
 \end{figure}
 
-{\bf Solution Implementation:} We implement an iterative optimization approach using:
+{\bf Two-Stage Solution Implementation:}
 
+We developed a two-stage multilateration algorithm to address the computational complexity and geometric ambiguities inherent in 3D ellipsoid intersection:
+
+{\bf Stage 1: Coarse Grid Search}
 \begin{itemize}
-\item {\em Gradient descent optimization:} For finding optimal intersection points
-\item {\em Weighted least squares:} To handle measurement uncertainty
-\item {\em Robust estimation:} To reject outlier measurements from multipath effects
+\item {\em Adaptive Resolution:} Increased z-axis resolution (2× multiplier) to handle vertical geometric constraints
+\item {\em Trajectory-Guided Search:} Uses Kalman filter predictions to focus search around expected positions
+\item {\em Ambiguity Detection:} Samples multiple z-levels to detect vertical positioning ambiguities
+\item {\em Search Space:} Covers entire room volume with coarse resolution (typically 20×20×40 grid)
 \end{itemize}
+
+{\bf Stage 2: Fine Localized Search}
+\begin{itemize}
+\item {\em Adaptive Resolution Enhancement:} Increases resolution by 50\% when ambiguities are detected
+\item {\em Localized Search Region:} Concentrates on area around coarse-stage optimum
+\item {\em Z-Axis Enhancement:} Doubles z-resolution and expands z-search range for ambiguous cases
+\item {\em Trajectory Consistency:} Validates results against motion model predictions
+\end{itemize}
+
+{\bf Continuity Constraints:}
+
+To address z-axis instability discovered during implementation, we incorporate temporal continuity constraints:
+
+\begin{equation}
+E_{total} = E_{ellipsoid} + \alpha_z (z_t - z_{t-1})^2
+\label{eq:continuity_constraint}
+\end{equation}
+
+where $\alpha_z = 0.5$ penalizes sudden vertical movements while preserving legitimate motion patterns.
 
 \subsection{Adaptive Noise Handling for Vertical Measurements}
 
@@ -301,33 +380,88 @@ Current implementation limitations include:
 
 \section{Conclusion}
 
-This work successfully demonstrates the extension of acoustic multi-target tracking from 2D to 3D space. The key contributions include:
+This work successfully demonstrates the extension of the AMT+ acoustic multi-target tracking system from 2D to full 3D space, addressing fundamental challenges that arise when transitioning from planar to volumetric tracking environments.
 
-\subsection{Technical Achievements}
+\subsection{Technical Contributions}
+
+The key technical achievements in extending AMT+ to 3D include:
 
 \begin{itemize}
-\item {\em 9D state space implementation:} Enhanced Kalman filtering for full 3D motion tracking
-\item {\em Multi-ellipsoid intersection:} Robust algorithms for 3D position estimation from acoustic measurements
-\item {\em Adaptive noise handling:} Recognition and compensation for z-axis measurement challenges
-\item {\em Temporal continuity:} Constraints to improve vertical tracking stability
+\item {\em Enhanced State Modeling:} Successfully expanded from 6D to 9D state vectors to handle 3D position, velocity, and acceleration tracking
+\item {\em Two-Stage Multilateration:} Developed adaptive grid search algorithms to handle the computational complexity of multi-ellipsoid intersection problems
+\item {\em Z-Axis Stabilization:} Identified and addressed vertical measurement instabilities through adaptive noise modeling and temporal continuity constraints
+\item {\em Geometric Constraint Handling:} Implemented solutions for the geometric ambiguities inherent in vertical localization with horizontally-deployed microphone arrays
+\end{itemize}
+
+\subsection{Challenges Addressed}
+
+The 3D extension required solving several fundamental challenges not present in 2D systems:
+
+{\bf Geometric Ambiguity Resolution:} The limited vertical baseline diversity in typical microphone deployments creates inherent geometric degeneracy. We addressed this through:
+\begin{itemize}
+\item Adaptive measurement noise covariance that accounts for directional constraints
+\item Enhanced z-axis resolution in the multilateration grid search
+\item Temporal continuity constraints to prevent unrealistic vertical jumps
+\end{itemize}
+
+{\bf Computational Complexity Management:} The transition from 2D ellipse intersections to 3D ellipsoid intersections significantly increases computational requirements. We managed this through:
+\begin{itemize}
+\item Two-stage adaptive resolution algorithms
+\item Trajectory-guided search optimization
+\item Ambiguity detection and resolution enhancement
+\end{itemize}
+
+{\bf Measurement Stability:} Z-axis measurements exhibit higher uncertainty than horizontal measurements. We handled this through:
+\begin{itemize}
+\item Directional noise modeling with increased z-axis uncertainty
+\item Kalman filter adaptations for 3D motion models
+\item Robust estimation techniques for outlier rejection
 \end{itemize}
 
 \subsection{Performance Validation}
 
-The 3D extension maintains practical tracking accuracy with mean errors under 0.2 m across various conditions, demonstrating feasibility for real-world applications requiring full 3D acoustic tracking.
+The AMT3D extension achieves tracking accuracy ranging from 0.095 m to 0.192 m depending on acoustic conditions and array configurations, demonstrating that 3D acoustic tracking is feasible while maintaining practical accuracy levels for real-world applications.
 
-\subsection{Future Work}
-
-Future research directions include:
-
+Array configuration analysis reveals:
 \begin{itemize}
-\item {\em Adaptive array configuration:} Automatic optimization of microphone placement for 3D scenarios
-\item {\em Machine learning integration:} Neural networks for improved multipath handling and target association
-\item {\em Real-time optimization:} Further computational efficiency improvements for real-time deployment
-\item {\em Multi-room extension:} Scaling to larger 3D environments with multiple interconnected spaces
+\item 4-microphone arrays provide approximately 18.2\% better performance than 3-microphone configurations
+\item Distributed geometries excel in optimal conditions while compact arrays provide more consistent performance
+\item Linear arrangements offer deployment advantages for consumer electronics integration
 \end{itemize}
 
-The AMT3D system establishes a foundation for practical 3D acoustic tracking, opening new possibilities for spatial interaction and monitoring applications across diverse 3D environments.
+\subsection{Implementation Insights}
+
+Several critical insights emerged during the 3D extension:
+
+\begin{itemize}
+\item {\em Z-axis challenges are fundamental:} Vertical positioning remains the primary limitation due to typical horizontal array geometries
+\item {\em Temporal tracking is essential:} Continuity constraints are crucial for stable 3D tracking, particularly in the vertical dimension
+\item {\em Adaptive algorithms are necessary:} Fixed-resolution approaches are insufficient for the varying geometric constraints in 3D space
+\end{itemize}
+
+\subsection{Future Research Directions}
+
+The successful 3D extension opens several avenues for future development:
+
+\begin{itemize}
+\item {\em Enhanced Array Geometries:} Investigation of vertically-distributed microphone arrays for improved z-axis resolution
+\item {\em Machine Learning Integration:} Neural network approaches for handling complex multipath environments and geometric constraints
+\item {\em Multi-Scale Tracking:} Extension to larger 3D environments with multiple interconnected spaces
+\item {\em Real-Time Optimization:} Further computational efficiency improvements for deployment on resource-constrained devices
+\end{itemize}
+
+\subsection{Impact and Applications}
+
+The AMT3D system establishes a foundation for practical 3D acoustic tracking, enabling applications that require full volumetric position awareness:
+
+\begin{itemize}
+\item {\em Human Activity Monitoring:} Full-body gesture and movement analysis in 3D space
+\item {\em Smart Environment Interaction:} Room-scale interaction systems for smart homes and offices
+\item {\em Industrial Applications:} Personnel and equipment tracking in 3D factory environments
+\item {\em Assistive Technologies:} Enhanced accessibility interfaces requiring 3D spatial awareness
+\end{itemize}
+
+The successful transition from 2D to 3D acoustic tracking demonstrates that smartphone-based MIMO systems can be extended to handle the geometric and computational challenges of volumetric environments, providing a foundation for next-generation spatial interaction technologies.
 
 \bibliographystyle{IEEEbib}
 \begin{thebibliography}{1}
