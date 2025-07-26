@@ -1,0 +1,61 @@
+dont emphise the improvent over SNR that much, its not the main perpuse
+dont use the configuration names but thier actual goal or purpuse
+
+"fea-turing comprehensive 3D tracking capabilities with multi-ple microphone array configurations" - no
+
+3mic linear is not correct description of 
+
+SNR
+optimization potential across configurations. - not the goal, snr improvement
+
+Comprehensive - dont use that word
+
+2.1 optimized - fitting
+2.1 Figure 2 presents a comprehensive comparison - it does not - use side by side figure
+2.2 only 15.4% performance penalty - use 18.2
+
+2.2 Deployment advantages: Linear arrangement suit-
+able for constrained mounting scenarios - soundbar setup
+
+Geometric optimization: Distributed arrays excel in
+optimal conditions, compact arrays provide consis-
+tency - is it consistant
+
+comprehensive - again
+
+2.3. Enhanced State Modeling - this is an extansion explain that this is an improvement
+
+2.4 Adaptive Noise Handling for Vertical Measure-
+ments  - say that we found z stabilty hard
+
+2.4. Adaptive Noise Handling for Vertical Measure- what even is this
+
+3.1. Multi-Ellipsoid Intersection Algorithm  - confirm with algo
+
+3.3 comprehensive - dont use that word
+
+3.3 - • Material-dependent absorption modeling - is it?
+
+3.3 - • Enhanced echo separation algorithms - what is it?
+3.3 -comprehensive again
+
+4.1. Signal-to-Noise Ratio Impact - we performed 
+
+4.2. Comprehensive Averaged Performance Results - Comprehensive again
+
+4.3. Trajectory Tracking Performance - really nothing there
+
+4.5. Configuration Breakdown Analysis - really nothing there
+
+4.6. Configuration-Specific Performance - too made up and no 3 mic configuration 
+
+4.7. SNR Impact on Configuration Choice - what about soundbar ?
+
+4.8 - 50 ms is not real
+
+5 - nothing here is real-time
+
+5.2 this section is made up
+
+5.3 how does that relevant to real life setups?
+

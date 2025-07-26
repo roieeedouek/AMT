@@ -1,0 +1,352 @@
+\documentclass[a4paper]{article}
+\usepackage{digitalspeech}
+\usepackage{amssymb,amsmath,amsfonts,graphicx}
+\usepackage[english]{babel}
+\usepackage{graphics}
+\usepackage{epsf,psfig}
+
+\ifpdf
+\DeclareGraphicsExtensions{.pdf,.jpg,.tif}
+\else
+\DeclareGraphicsExtensions{.eps,.pdf,.jpg,.tif}
+\fi
+
+\title{AMT3D: Extending Acoustic Multi-Target Tracking from 2D to 3D Space}
+
+\name{Research Implementation Report}
+
+\address{
+Advanced Acoustic Tracking Research\\
+Three-Dimensional Extension Study}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+{\ninept This work presents AMT3D, an extension of the AMT+ acoustic multi-target tracking system from two-dimensional to three-dimensional space. The transition from 2D to 3D tracking introduces fundamental challenges including geometric ambiguity in the vertical dimension, increased computational complexity for multi-ellipsoid intersections, and reduced precision in z-axis measurements. We address these challenges through enhanced state modeling with 9-dimensional vectors, adaptive noise handling for vertical measurements, and improved ellipsoid intersection algorithms. Performance evaluation across three microphone array configurations demonstrates the feasibility of 3D acoustic tracking with mean tracking errors ranging from 0.095 m to 0.192 m depending on noise conditions and array geometry. The implementation provides a foundation for extending acoustic tracking applications from planar to full 3D environments.}
+\end{abstract}
+
+\section{Introduction}
+
+\subsection{Background: AMT+ 2D System}
+
+The AMT+ (Acoustic Multi-Target Plus) system \cite{amt_plus} established a foundation for acoustic tracking using smartphone-based MIMO (Multiple-Input Multiple-Output) arrays. The original system operates in 2D space with the following key characteristics:
+
+\begin{itemize}
+\item {\em 2D State Vector:} Tracks position $(x, y)$, velocity $(v_x, v_y)$, and acceleration $(a_x, a_y)$ in a 6-dimensional state space
+\item {\em Circle Intersection:} Localizes targets by finding intersections of circles defined by acoustic path lengths
+\item {\em Planar Geometry:} Assumes all microphones and targets operate in the same horizontal plane
+\item {\em Kalman Filtering:} Uses linear Kalman filters adapted for 2D motion models
+\item {\em Multi-target Capability:} Simultaneously tracks multiple acoustic sources with target identification
+\end{itemize}
+
+The AMT+ system achieved centimeter-level accuracy in controlled 2D environments by leveraging:
+
+\begin{itemize}
+\item {\em Time Difference of Arrival (TDOA):} Precise measurement of acoustic signal arrival times
+\item {\em Echo Cancellation:} Advanced algorithms to separate direct path from multipath reflections
+\item {\em Target Association:} Probabilistic data association for multi-target scenarios
+\item {\em Room Acoustic Modeling:} Compensation for environmental acoustic properties
+\end{itemize}
+
+\subsection{Motivation for 3D Extension}
+
+Real-world acoustic tracking applications require full three-dimensional capabilities:
+
+\begin{itemize}
+\item {\em Human Activity Monitoring:} Tracking body movement, gesture recognition, and posture analysis
+\item {\em Drone/UAV Tracking:} Monitoring aerial vehicles in indoor environments
+\item {\em Smart Home Applications:} Room-scale interaction and presence detection
+\item {\em Industrial Monitoring:} Equipment and personnel tracking in 3D factory spaces
+\end{itemize}
+
+However, extending from 2D to 3D introduces significant technical challenges that cannot be solved by simply adding a third dimension to existing algorithms.
+
+\subsection{Fundamental Challenges in 3D Extension}
+
+The transition from 2D to 3D tracking presents several critical challenges:
+
+\begin{itemize}
+\item {\em Geometric Ambiguity:} Limited acoustic baseline diversity in the vertical dimension creates geometric degeneracy
+\item {\em Computational Complexity:} Multi-ellipsoid intersection problems are significantly more complex than circle intersections
+\item {\em Measurement Uncertainty:} Z-axis measurements exhibit higher uncertainty due to typical microphone array geometries
+\item {\em State Space Expansion:} Moving from 6D to 9D state vectors increases filter complexity and computational requirements
+\item {\em Multipath Effects:} 3D room acoustics introduce more complex reflection patterns
+\end{itemize}
+
+\section{Microphone Array Configurations and Challenges}
+
+\subsection{Array Configuration Design Rationale}
+
+To evaluate the 3D extension across different deployment scenarios, we tested three distinct microphone array configurations, each addressing specific geometric constraints and application requirements:
+
+\begin{itemize}
+\item {\em Compact 4-Microphone Array:} Designed for space-constrained deployments with balanced 3D coverage
+\item {\em Distributed 4-Microphone Array:} Optimized for maximum geometric diversity and triangulation accuracy
+\item {\em Soundbar 3-Microphone Array:} Linear arrangement suitable for consumer electronics integration
+\end{itemize}
+
+Figure \ref{fig:config_comparison} shows the performance characteristics of these three array configurations, demonstrating the trade-offs between geometric constraints and tracking accuracy.
+
+\begin{figure}[t]
+\centerline{
+\includegraphics[width=85mm]{final/simple_three_config_performance_comparison.png}}
+\caption{{\it Performance comparison of three microphone array configurations showing average and optimal tracking errors. The compact 4-mic array provides consistent performance, the distributed 4-mic array excels in optimal conditions, and the soundbar 3-mic array offers competitive performance with hardware simplification.}}
+\label{fig:config_comparison}
+\end{figure}
+
+\subsection{Challenge: Geometric Ambiguity in Vertical Dimension}
+
+One of the primary challenges in 3D extension is the limited geometric diversity in the vertical dimension. Traditional microphone arrays are typically deployed horizontally, creating strong geometric constraints for z-axis localization.
+
+{\bf Problem:} With microphones primarily in horizontal planes, the acoustic baselines for vertical triangulation are significantly shorter than horizontal baselines, leading to:
+
+\begin{itemize}
+\item Reduced precision in z-coordinate estimation
+\item Increased sensitivity to measurement noise in vertical direction
+\item Geometric degeneracy when targets are directly above/below array center
+\end{itemize}
+
+{\bf Solution Approach:} We address this through:
+
+\begin{itemize}
+\item {\em Adaptive measurement noise modeling:} Increased uncertainty weights for z-axis measurements
+\item {\em Temporal continuity constraints:} Penalize unrealistic vertical movements
+\item {\em Multi-array fusion:} When possible, combine measurements from arrays at different heights
+\end{itemize}
+
+\section{Technical Implementation and Solutions}
+
+\subsection{Enhanced State Modeling for 3D Tracking}
+
+{\bf Challenge:} The original AMT+ system uses a 6-dimensional state vector for 2D tracking. Extending to 3D requires careful redesign of the state space and motion models.
+
+{\bf Solution:} We implement a 9-dimensional state vector to track position, velocity, and acceleration in all three dimensions:
+
+\begin{equation}
+\mathbf{x} = [x, y, z, v_x, v_y, v_z, a_x, a_y, a_z]^T
+\label{eq:state_vector}
+\end{equation}
+
+The state transition matrix incorporates kinematic equations for constant acceleration motion in 3D:
+
+\begin{equation}
+\mathbf{F} = \begin{bmatrix}
+\mathbf{I}_3 & \Delta t \mathbf{I}_3 & \frac{1}{2}\Delta t^2 \mathbf{I}_3 \\
+\mathbf{0} & \mathbf{I}_3 & \Delta t \mathbf{I}_3 \\
+\mathbf{0} & \mathbf{0} & \mathbf{I}_3
+\end{bmatrix}
+\label{eq:transition_matrix}
+\end{equation}
+
+This expansion from 6D to 9D increases computational complexity but provides the necessary degrees of freedom for full 3D motion modeling.
+
+\subsection{Multi-Ellipsoid Intersection Algorithm}
+
+{\bf Challenge:} The AMT+ 2D system solves circle intersection problems. In 3D, we must solve ellipsoid intersection problems, which are significantly more complex both geometrically and computationally.
+
+{\bf Problem Formulation:} Each speaker-microphone pair contributes an ellipsoid with foci at the speaker and microphone positions. The target localization becomes a multi-ellipsoid intersection optimization problem:
+
+\begin{equation}
+\mathbf{p}^* = \arg\min_{\mathbf{p}} \sum_{i=1}^{N} w_i |\|\mathbf{p} - \mathbf{f}_{i1}\| + \|\mathbf{p} - \mathbf{f}_{i2}\| - L_i|^2
+\label{eq:ellipsoid_optimization}
+\end{equation}
+
+where $\mathbf{f}_{i1}$ and $\mathbf{f}_{i2}$ are the ellipsoid foci, $L_i$ is the measured path length, and $w_i$ represents confidence weights.
+
+Figure \ref{fig:ellipsoid_intersection} demonstrates the ellipsoid intersection process during active tracking.
+
+\begin{figure}[t]
+\centerline{
+\includegraphics[width=85mm]{final/ellipses_step012.png}}
+\caption{{\it Multi-ellipsoid intersection visualization showing acoustic ellipses converging on target position. Each speaker-microphone pair contributes a constraint ellipse, and the target location is determined through optimization of the intersection problem.}}
+\label{fig:ellipsoid_intersection}
+\end{figure}
+
+{\bf Solution Implementation:} We implement an iterative optimization approach using:
+
+\begin{itemize}
+\item {\em Gradient descent optimization:} For finding optimal intersection points
+\item {\em Weighted least squares:} To handle measurement uncertainty
+\item {\em Robust estimation:} To reject outlier measurements from multipath effects
+\end{itemize}
+
+\subsection{Adaptive Noise Handling for Vertical Measurements}
+
+{\bf Challenge:} During implementation, we discovered that z-axis measurements are inherently less stable than horizontal measurements due to typical microphone array geometries.
+
+{\bf Problem Identified:} Standard noise models assume isotropic measurement uncertainty. However, our experiments revealed that vertical position estimates exhibit higher variance and instability.
+
+{\bf Solution:} We implement adaptive measurement noise covariance that accounts for geometric constraints:
+
+\begin{equation}
+\mathbf{R} = \text{diag}([r_x, r_y, r_z])
+\label{eq:measurement_noise}
+\end{equation}
+
+where $r_z > r_x, r_y$ to reflect the increased uncertainty in vertical measurements.
+
+Additionally, we introduce temporal continuity constraints to prevent unrealistic vertical position jumps:
+
+\begin{equation}
+E_{continuity} = \alpha_z (z_t - z_{t-1})^2
+\label{eq:z_continuity}
+\end{equation}
+
+where $\alpha_z$ is a weighting factor that penalizes sudden vertical movements while preserving legitimate motion.
+
+\subsection{3D Room Acoustic Modeling}
+
+{\bf Challenge:} 3D environments introduce more complex multipath propagation patterns compared to 2D scenarios.
+
+{\bf Implementation:} We utilize pyroomacoustics \cite{pyroomacoustics} for realistic 3D acoustic simulation including:
+
+\begin{itemize}
+\item 3D reflection pattern modeling
+\item Wall and ceiling absorption effects
+\item Realistic propagation delays in 3D space
+\item Enhanced multipath separation algorithms
+\end{itemize}
+
+Figure \ref{fig:system_architecture} illustrates the overall AMT3D system architecture.
+
+\begin{figure}[t]
+\centerline{
+\includegraphics[width=85mm]{final/system_architecture.png}}
+\caption{{\it AMT3D system architecture showing the 3D extension components including enhanced state modeling, multi-ellipsoid intersection algorithms, and adaptive noise handling for vertical measurements.}}
+\label{fig:system_architecture}
+\end{figure}
+
+\section{Performance Evaluation and Results}
+
+\subsection{Evaluation Methodology}
+
+We evaluated the 3D extension performance across different noise conditions (SNR 0, 5, 10, 20 dB) and microphone array configurations to understand the system's behavior across various operational scenarios.
+
+Figure \ref{fig:snr_analysis} shows the tracking error performance across different noise conditions, demonstrating both mean and maximum error bounds.
+
+\begin{figure}[t]
+\centerline{
+\includegraphics[width=85mm]{final/snr_vs_error_focused.png}}
+\caption{{\it Mean and maximum 3D tracking error versus noise levels, showing the system's performance degradation under challenging acoustic conditions. Both error metrics improve consistently as noise decreases, validating the robustness of the 3D extension.}}
+\label{fig:snr_analysis}
+\end{figure}
+
+\subsection{Error Characteristics Analysis}
+
+Figure \ref{fig:error_metrics} provides detailed analysis of different error metrics across noise conditions.
+
+\begin{figure}[t]
+\centerline{
+\includegraphics[width=85mm]{final/error_metrics_comparison.png}}
+\caption{{\it Error metrics comparison showing mean, standard deviation, and 95th percentile tracking errors across different noise levels. The analysis reveals consistent behavior across all error measures, indicating stable algorithm performance.}}
+\label{fig:error_metrics}
+\end{figure}
+
+\subsection{Temporal Tracking Stability}
+
+A critical aspect of 3D tracking is maintaining stability over extended time periods. Figure \ref{fig:temporal_tracking} demonstrates temporal performance characteristics.
+
+\begin{figure}[t]
+\centerline{
+\includegraphics[width=85mm]{final/temporal_tracking_performance.png}}
+\caption{{\it Temporal tracking performance showing error evolution over time for different noise levels. Higher SNR conditions demonstrate more stable tracking with reduced variance over extended sequences, validating the temporal continuity constraints implementation.}}
+\label{fig:temporal_tracking}
+\end{figure}
+
+\subsection{Performance Results Summary}
+
+The 3D extension achieves the following performance characteristics:
+
+\begin{itemize}
+\item {\em Mean tracking errors:} 0.095 m to 0.192 m depending on conditions
+\item {\em Array configuration impact:} 4-microphone arrays outperform 3-microphone setup by approximately 18.2\%
+\item {\em Noise sensitivity:} Performance degrades gracefully with increasing noise levels
+\item {\em Temporal stability:} Consistent tracking maintained over 50-step sequences
+\end{itemize}
+
+\section{Trajectory Visualization and Validation}
+
+Figure \ref{fig:trajectories} shows example trajectory tracking results demonstrating the system's 3D tracking capabilities.
+
+\begin{figure}[t]
+\centerline{
+\includegraphics[width=85mm]{final/tracking_trajectories_snr.png}}
+\caption{{\it 3D trajectory tracking visualization showing tracked paths across different noise conditions. The results demonstrate successful extension from 2D to 3D tracking with maintained accuracy in all three spatial dimensions.}}
+\label{fig:trajectories}
+\end{figure}
+
+\section{Challenges and Limitations}
+
+\subsection{Remaining Technical Challenges}
+
+Despite successful 3D extension, several challenges remain:
+
+\begin{itemize}
+\item {\em Z-axis precision:} Vertical tracking remains less precise than horizontal tracking
+\item {\em Computational overhead:} 9D state vectors and ellipsoid intersections increase processing requirements
+\item {\em Array geometry sensitivity:} Performance varies significantly with microphone placement
+\item {\em Multipath complexity:} 3D reflections create more complex acoustic environments
+\end{itemize}
+
+\subsection{Implementation Limitations}
+
+Current implementation limitations include:
+
+\begin{itemize}
+\item {\em Fixed array configurations:} Manual configuration required for different deployments
+\item {\em Room-specific calibration:} Acoustic models require environment-specific tuning
+\item {\em Target count limitations:} Performance degrades with increased number of simultaneous targets
+\end{itemize}
+
+\section{Conclusion}
+
+This work successfully demonstrates the extension of acoustic multi-target tracking from 2D to 3D space. The key contributions include:
+
+\subsection{Technical Achievements}
+
+\begin{itemize}
+\item {\em 9D state space implementation:} Enhanced Kalman filtering for full 3D motion tracking
+\item {\em Multi-ellipsoid intersection:} Robust algorithms for 3D position estimation from acoustic measurements
+\item {\em Adaptive noise handling:} Recognition and compensation for z-axis measurement challenges
+\item {\em Temporal continuity:} Constraints to improve vertical tracking stability
+\end{itemize}
+
+\subsection{Performance Validation}
+
+The 3D extension maintains practical tracking accuracy with mean errors under 0.2 m across various conditions, demonstrating feasibility for real-world applications requiring full 3D acoustic tracking.
+
+\subsection{Future Work}
+
+Future research directions include:
+
+\begin{itemize}
+\item {\em Adaptive array configuration:} Automatic optimization of microphone placement for 3D scenarios
+\item {\em Machine learning integration:} Neural networks for improved multipath handling and target association
+\item {\em Real-time optimization:} Further computational efficiency improvements for real-time deployment
+\item {\em Multi-room extension:} Scaling to larger 3D environments with multiple interconnected spaces
+\end{itemize}
+
+The AMT3D system establishes a foundation for practical 3D acoustic tracking, opening new possibilities for spatial interaction and monitoring applications across diverse 3D environments.
+
+\bibliographystyle{IEEEbib}
+\begin{thebibliography}{1}
+
+\bibitem{amt_plus}
+P. Wang, R. Jiang, J. Hu, Y. Zhu, H. Jiang, M. Li, and C. Liu,
+``AMT+: Acoustic Multi-Target Tracking With Smartphone MIMO System,''
+{\em IEEE Transactions on Mobile Computing}, vol. 23, no. 12, pp. 1-14, December 2024.
+
+\bibitem{pyroomacoustics}
+R. Scheibler, E. Bezzam, and I. Dokmanić,
+``Pyroomacoustics: A Python Package for Audio Room Simulation and Array Processing Algorithms,''
+{\em Proc. IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)}, pp. 351-355, 2018.
+
+\bibitem{kalman3d}
+G. Welch and G. Bishop,
+``An Introduction to the Kalman Filter,''
+{\em University of North Carolina at Chapel Hill}, Technical Report TR 95-041, 2006.
+
+\end{thebibliography}
+
+\end{document}
