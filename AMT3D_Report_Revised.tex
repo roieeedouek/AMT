@@ -13,11 +13,11 @@
 
 \title{AMT3D: Extending Acoustic Multi-Target Tracking from 2D to 3D Space}
 
-\name{Research Implementation Report}
+\name{Roee Douek}
 
 \address{
-Advanced Acoustic Tracking Research\\
-Three-Dimensional Extension Study}
+roee.douek@campus.technion.ac.il\\
+Technion - Israel Institute of Technology}
 
 \begin{document}
 \maketitle
@@ -90,7 +90,18 @@ The AMT+ system implements a sophisticated 5-stage processing pipeline:
 \begin{itemize}
 \item {\em Ellipse Construction:} Each speaker-microphone pair creates a ranging ellipse with path length equal to measured echo time
 \item {\em Multi-Target Identification:} Distance projection patterns enable continuous target tracking
-\item {\em 2D Position Estimation:} Intersection of multiple ellipses determines target locations
+\item {\em 2D Position Estimation:} Intersection of multiple ellipses determines target locations in planar space
+\end{itemize}
+
+\subsubsection{AMT+ Tracking Approach}
+
+The original AMT+ system performs **position-only tracking** in 2D space using multi-ellipse intersection. Key characteristics include:
+
+\begin{itemize}
+\item {\em Position Tracking:} Estimates current 2D position (x, y) without explicit velocity or acceleration modeling
+\item {\em Ellipse Intersection:} Uses geometric intersection of ranging ellipses for localization
+\item {\em Distance Projection:} Employs unique reflection patterns for multi-target identification and continuous tracking
+\item {\em Particle vs Non-Particle:} Recognizes targets as extended objects rather than point sources
 \end{itemize}
 
 \subsubsection{AMT+ Performance Achievements}
@@ -118,6 +129,17 @@ Real-world acoustic tracking applications require full three-dimensional capabil
 
 However, extending from 2D to 3D introduces significant technical challenges that cannot be solved by simply adding a third dimension to existing algorithms.
 
+\subsection{AMT3D System Architecture}
+
+Figure \ref{fig:system_architecture} illustrates the AMT3D system architecture, showing the key components developed for 3D extension.
+
+\begin{figure}[t]
+\centerline{
+\includegraphics[width=85mm]{final/system_architecture.png}}
+\caption{{\it AMT3D system architecture showing the enhanced components for 3D tracking: 9-dimensional state vectors, two-stage multilateration algorithm, adaptive noise handling for z-axis measurements, and temporal continuity constraints. The system builds upon AMT+ foundations while addressing the fundamental challenges of volumetric acoustic tracking.}}
+\label{fig:system_architecture}
+\end{figure}
+
 \subsection{Fundamental Challenges in 3D Extension}
 
 The transition from 2D to 3D tracking presents several critical challenges:
@@ -126,7 +148,7 @@ The transition from 2D to 3D tracking presents several critical challenges:
 \item {\em Geometric Ambiguity:} Limited acoustic baseline diversity in the vertical dimension creates geometric degeneracy
 \item {\em Computational Complexity:} Multi-ellipsoid intersection problems are significantly more complex than circle intersections
 \item {\em Measurement Uncertainty:} Z-axis measurements exhibit higher uncertainty due to typical microphone array geometries
-\item {\em State Space Expansion:} Moving from 6D to 9D state vectors increases filter complexity and computational requirements
+\item {\em State Space Expansion:} Moving from position-only tracking to 9D state vectors increases filter complexity and computational requirements
 \item {\em Multipath Effects:} 3D room acoustics introduce more complex reflection patterns
 \end{itemize}
 
@@ -153,9 +175,9 @@ Figure \ref{fig:config_comparison} shows the performance characteristics of thes
 
 \subsection{Challenge: Geometric Ambiguity in Vertical Dimension}
 
-One of the primary challenges in 3D extension is the limited geometric diversity in the vertical dimension. Traditional microphone arrays are typically deployed horizontally, creating strong geometric constraints for z-axis localization.
+One of the primary challenges in 3D extension is the limited geometric diversity in the vertical dimension. Even with the home theater setup providing speakers at different heights (0.7m-1.2m) and varied positioning, vertical triangulation remains more constrained than horizontal localization.
 
-{\bf Problem:} With microphones primarily in horizontal planes, the acoustic baselines for vertical triangulation are significantly shorter than horizontal baselines, leading to:
+{\bf Problem:} Despite the home theater setup providing some vertical diversity, the acoustic baselines for vertical triangulation are still more limited than horizontal baselines, leading to:
 
 \begin{itemize}
 \item Reduced precision in z-coordinate estimation
@@ -175,9 +197,9 @@ One of the primary challenges in 3D extension is the limited geometric diversity
 
 \subsection{Enhanced State Modeling for 3D Tracking}
 
-{\bf Challenge:} The original AMT+ system uses a 6-dimensional state vector for 2D tracking. Extending to 3D requires careful redesign of the state space and motion models.
+{\bf Challenge:} The original AMT+ system performs position-only tracking in 2D space using ellipse intersections. Extending to 3D requires not only adding the third spatial dimension but also implementing sophisticated motion modeling to handle the increased complexity and geometric ambiguities.
 
-{\bf Solution:} We implement a 9-dimensional state vector to track position, velocity, and acceleration in all three dimensions:
+{\bf Solution:} We implement a 9-dimensional state vector to track position, velocity, and acceleration in all three dimensions, representing a fundamental enhancement from AMT+'s position-only approach:
 
 \begin{equation}
 \mathbf{x} = [x, y, z, v_x, v_y, v_z, a_x, a_y, a_z]^T
@@ -195,7 +217,7 @@ The state transition matrix incorporates kinematic equations for constant accele
 \label{eq:transition_matrix}
 \end{equation}
 
-This expansion from 6D to 9D increases computational complexity but provides the necessary degrees of freedom for full 3D motion modeling.
+This expansion from position-only tracking to 9D state modeling increases computational complexity but provides the necessary degrees of freedom for full 3D motion modeling and temporal stability that pure geometric intersection approaches cannot achieve.
 
 \subsection{Two-Stage Multi-Ellipsoid Intersection Algorithm}
 
@@ -265,14 +287,7 @@ where $\alpha_z = 0.5$ penalizes sudden vertical movements while preserving legi
 
 where $r_z > r_x, r_y$ to reflect the increased uncertainty in vertical measurements.
 
-Additionally, we introduce temporal continuity constraints to prevent unrealistic vertical position jumps:
-
-\begin{equation}
-E_{continuity} = \alpha_z (z_t - z_{t-1})^2
-\label{eq:z_continuity}
-\end{equation}
-
-where $\alpha_z$ is a weighting factor that penalizes sudden vertical movements while preserving legitimate motion.
+Additionally, we introduce temporal continuity constraints to prevent unrealistic vertical position jumps, as incorporated into the total error function shown in Equation \ref{eq:continuity_constraint}.
 
 \subsection{3D Room Acoustic Modeling}
 
@@ -287,14 +302,6 @@ where $\alpha_z$ is a weighting factor that penalizes sudden vertical movements 
 \item Enhanced multipath separation algorithms
 \end{itemize}
 
-Figure \ref{fig:system_architecture} illustrates the overall AMT3D system architecture.
-
-\begin{figure}[t]
-\centerline{
-\includegraphics[width=85mm]{final/system_architecture.png}}
-\caption{{\it AMT3D system architecture showing the 3D extension components including enhanced state modeling, multi-ellipsoid intersection algorithms, and adaptive noise handling for vertical measurements.}}
-\label{fig:system_architecture}
-\end{figure}
 
 \section{Performance Evaluation and Results}
 
@@ -302,36 +309,66 @@ Figure \ref{fig:system_architecture} illustrates the overall AMT3D system archit
 
 We evaluated the 3D extension performance across different noise conditions (SNR 0, 5, 10, 20 dB) and microphone array configurations to understand the system's behavior across various operational scenarios.
 
-Figure \ref{fig:snr_analysis} shows the tracking error performance across different noise conditions, demonstrating both mean and maximum error bounds.
+\subsection{Noise Impact on 3D Tracking Performance}
+
+Figure \ref{fig:snr_analysis} demonstrates how acoustic noise affects both mean and maximum 3D tracking errors across the tested SNR range.
 
 \begin{figure}[t]
 \centerline{
 \includegraphics[width=85mm]{final/snr_vs_error_focused.png}}
-\caption{{\it Mean and maximum 3D tracking error versus noise levels, showing the system's performance degradation under challenging acoustic conditions. Both error metrics improve consistently as noise decreases, validating the robustness of the 3D extension.}}
+\caption{{\it Mean and maximum 3D tracking error versus SNR levels, averaged across all three microphone configurations. The results show that mean errors decrease from 0.192 m at SNR 0 dB to 0.112 m at SNR 20 dB (41.7\% improvement), while maximum errors decrease from approximately 0.54 m to 0.20 m (62.9\% improvement), demonstrating the system's robustness across diverse acoustic conditions.}}
 \label{fig:snr_analysis}
 \end{figure}
 
-\subsection{Error Characteristics Analysis}
+The results reveal several important characteristics of 3D acoustic tracking under noise:
 
-Figure \ref{fig:error_metrics} provides detailed analysis of different error metrics across noise conditions.
+\begin{itemize}
+\item {\em Consistent Improvement Pattern:} Both mean and maximum errors decrease monotonically with increasing SNR, indicating stable algorithm behavior
+\item {\em Maximum Error Sensitivity:} Maximum errors show greater sensitivity to noise (62.9\% improvement) than mean errors (41.7\% improvement), suggesting that extreme outliers are more affected by acoustic interference
+\item {\em Practical Performance Range:} Even under challenging conditions (SNR 0 dB), mean tracking errors remain below 0.2 m, demonstrating practical feasibility
+\item {\em Error Bounds:} The gap between mean and maximum errors indicates the system's reliability, with maximum errors approximately 2.5-3× the mean errors across all SNR levels
+\end{itemize}
+
+\subsection{Error Distribution and Statistical Analysis}
+
+Figure \ref{fig:error_metrics} provides detailed analysis of different error metrics across noise conditions, revealing the statistical characteristics of 3D tracking performance.
 
 \begin{figure}[t]
 \centerline{
 \includegraphics[width=85mm]{final/error_metrics_comparison.png}}
-\caption{{\it Error metrics comparison showing mean, standard deviation, and 95th percentile tracking errors across different noise levels. The analysis reveals consistent behavior across all error measures, indicating stable algorithm performance.}}
+\caption{{\it Error metrics comparison showing mean 3D error, standard deviation, and 95th percentile tracking errors across SNR levels from 0 to 20 dB. All three metrics follow similar improvement patterns: mean errors decrease from 0.192 m to 0.112 m, standard deviations reduce from 0.14 m to 0.06 m, and P95 errors improve from 0.44 m to 0.19 m, indicating consistent algorithm behavior across the complete error distribution.}}
 \label{fig:error_metrics}
 \end{figure}
 
-\subsection{Temporal Tracking Stability}
+The statistical analysis reveals important insights about error distribution characteristics:
 
-A critical aspect of 3D tracking is maintaining stability over extended time periods. Figure \ref{fig:temporal_tracking} demonstrates temporal performance characteristics.
+\begin{itemize}
+\item {\em Proportional Error Reduction:} All error metrics (mean, standard deviation, P95) improve proportionally with increasing SNR, maintaining consistent relative relationships across noise conditions
+\item {\em Standard Deviation Analysis:} Error standard deviation decreases from 0.14 m to 0.06 m (57\% improvement), indicating that noise not only affects average performance but significantly impacts tracking consistency
+\item {\em P95 Performance:} 95th percentile errors range from 0.19 m to 0.44 m, showing that even worst-case scenarios remain within practical bounds for most applications
+\item {\em Distribution Stability:} The parallel improvement patterns across all metrics suggest that the underlying error distribution shape remains stable, indicating robust algorithm design
+\end{itemize}
+
+\subsection{Temporal Tracking Stability and Consistency}
+
+A critical aspect of 3D tracking is maintaining stability over extended time periods. Figure \ref{fig:temporal_tracking} demonstrates how tracking errors evolve over time for different noise conditions using real trajectory data.
 
 \begin{figure}[t]
 \centerline{
 \includegraphics[width=85mm]{final/temporal_tracking_performance.png}}
-\caption{{\it Temporal tracking performance showing error evolution over time for different noise levels. Higher SNR conditions demonstrate more stable tracking with reduced variance over extended sequences, validating the temporal continuity constraints implementation.}}
+\caption{{\it Temporal tracking performance showing 3D error evolution over 50 time steps (5 seconds) for different SNR levels, averaged across all three microphone configurations. SNR 0 dB shows high variability (0.05-0.40 m range) with frequent error spikes, while SNR 20 dB demonstrates stable tracking (0.05-0.25 m range) with consistent low-variance performance, validating the effectiveness of temporal continuity constraints.}}
 \label{fig:temporal_tracking}
 \end{figure}
+
+The temporal analysis reveals critical insights about tracking consistency and stability:
+
+\begin{itemize}
+\item {\em Noise-Dependent Variance:} At SNR 0 dB, tracking errors exhibit high temporal variance (0.05-0.40 m range) with frequent error spikes, while SNR 20 dB maintains low variance (0.05-0.25 m range) throughout the tracking sequence
+\item {\em Stability Convergence:} Higher SNR conditions (10-20 dB) show convergent behavior where initial tracking uncertainties settle into stable patterns within the first 10-15 time steps
+\item {\em Error Spike Patterns:} Low SNR conditions exhibit periodic error spikes that correlate with challenging acoustic conditions, but the system demonstrates recovery capability through temporal continuity constraints
+\item {\em Tracking Persistence:} Even under worst-case conditions (SNR 0 dB), the system maintains tracking without complete failure, demonstrating the robustness of the two-stage multilateration approach
+\item {\em Continuity Validation:} The smoother temporal profiles at higher SNR levels validate the effectiveness of the temporal continuity constraints (Equation \ref{eq:continuity_constraint}) in preventing unrealistic position jumps
+\end{itemize}
 
 \subsection{Performance Results Summary}
 
@@ -387,10 +424,10 @@ This work successfully demonstrates the extension of the AMT+ acoustic multi-tar
 The key technical achievements in extending AMT+ to 3D include:
 
 \begin{itemize}
-\item {\em Enhanced State Modeling:} Successfully expanded from 6D to 9D state vectors to handle 3D position, velocity, and acceleration tracking
+\item {\em Enhanced State Modeling:} Successfully expanded from position-only tracking to 9D state vectors to handle 3D position, velocity, and acceleration tracking
 \item {\em Two-Stage Multilateration:} Developed adaptive grid search algorithms to handle the computational complexity of multi-ellipsoid intersection problems
 \item {\em Z-Axis Stabilization:} Identified and addressed vertical measurement instabilities through adaptive noise modeling and temporal continuity constraints
-\item {\em Geometric Constraint Handling:} Implemented solutions for the geometric ambiguities inherent in vertical localization with horizontally-deployed microphone arrays
+\item {\em Geometric Constraint Handling:} Implemented solutions for the geometric ambiguities inherent in vertical localization with home theater microphone array configurations
 \end{itemize}
 
 \subsection{Challenges Addressed}
@@ -434,7 +471,7 @@ Array configuration analysis reveals:
 Several critical insights emerged during the 3D extension:
 
 \begin{itemize}
-\item {\em Z-axis challenges are fundamental:} Vertical positioning remains the primary limitation due to typical horizontal array geometries
+\item {\em Z-axis challenges are fundamental:} Vertical positioning remains challenging despite home theater array geometry with some vertical diversity
 \item {\em Temporal tracking is essential:} Continuity constraints are crucial for stable 3D tracking, particularly in the vertical dimension
 \item {\em Adaptive algorithms are necessary:} Fixed-resolution approaches are insufficient for the varying geometric constraints in 3D space
 \end{itemize}
@@ -461,7 +498,7 @@ The AMT3D system establishes a foundation for practical 3D acoustic tracking, en
 \item {\em Assistive Technologies:} Enhanced accessibility interfaces requiring 3D spatial awareness
 \end{itemize}
 
-The successful transition from 2D to 3D acoustic tracking demonstrates that smartphone-based MIMO systems can be extended to handle the geometric and computational challenges of volumetric environments, providing a foundation for next-generation spatial interaction technologies.
+The successful transition from AMT+'s 2D position-only tracking to full 3D motion modeling demonstrates that smartphone-based MIMO systems can be extended to handle the geometric and computational challenges of volumetric environments, providing a foundation for next-generation spatial interaction technologies.
 
 \bibliographystyle{IEEEbib}
 \begin{thebibliography}{1}
